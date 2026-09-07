@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>配网终端通讯 · 104模拟主站</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- [AGENT_CHANGE_BEGIN] 2026-09-07 104-MVP界面 -->
+  <header class="top">
+    <div class="brand">配网终端通讯 · 104 模拟主站</div>
+    <div id="connBadge" class="badge off">未连接</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>连接配置</h2>
+      <div class="grid2">
+        <label>从站 IP <input id="remoteIp" value="127.0.0.1" /></label>
+        <label>从站端口 <input id="remotePort" type="number" value="2404" /></label>
+        <label>本地网卡/IP
+          <select id="localIp"></select>
+        </label>
+        <label>本地端口（空=自动）
+          <input id="localPort" type="number" min="0" max="65535" placeholder="自动" />
+        </label>
+        <label>公共地址 CA <input id="ca" type="number" value="1" /></label>
+        <label>源发地址 OA <input id="oa" type="number" value="0" /></label>
+      </div>
+      <div class="row">
+        <button id="btnConnect" class="primary">连接</button>
+        <button id="btnDisconnect">断开</button>
+        <button id="btnRefreshNic">刷新网卡</button>
+        <button id="btnSave">保存工程</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>四遥操作</h2>
+      <div class="row">
+        <button id="btnGI">总召唤</button>
+        <button id="btnClock">时钟同步</button>
+      </div>
+      <div class="grid2">
+        <label>遥控 IOA <input id="cmdIoa" type="number" value="1" /></label>
+        <label>类型
+          <select id="cmdKind">
+            <option value="sc">单点遥控</option>
+            <option value="dc">双点遥控</option>
+            <option value="se_nc">浮点设点</option>
+            <option value="se_na">归一化设点</option>
+          </select>
+        </label>
+        <label>值/状态
+          <input id="cmdValue" value="1" title="单点:1合0分; 双点:2合1分; 设点:数值" />
+        </label>
+        <label class="check"><input id="cmdSelect" type="checkbox" checked /> 预置(SBO)</label>
+      </div>
+      <div class="row">
+        <button id="btnCmd" class="primary">下发命令</button>
+        <button id="btnExecute">仅执行</button>
+      </div>
+    </section>
+
+    <section class="panel grow">
+      <h2>点表 / 实时数据</h2>
+      <div class="row">
+        <input id="newIoa" type="number" placeholder="IOA" />
+        <input id="newName" placeholder="名称" />
+        <select id="newType">
+          <option value="1">遥信 SP</option>
+          <option value="13">遥测 float</option>
+          <option value="45">遥控 SC</option>
+          <option value="50">设点 float</option>
+        </select>
+        <button id="btnAddPoint">添加点</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>IOA</th><th>名称</th><th>类型</th><th>值</th><th>品质</th><th></th></tr>
+          </thead>
+          <tbody id="pointBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel grow">
+      <h2>报文监视 <button id="btnClearFrames" class="link">清空</button></h2>
+      <div id="frameLog" class="log"></div>
+    </section>
+  </main>
+
+  <div id="modalMask" class="modal-mask hidden">
+    <div class="modal">
+      <div id="modalTitle" class="modal-title">提示</div>
+      <div id="modalBody" class="modal-body"></div>
+      <div class="row end">
+        <button id="modalOk" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <!-- [AGENT_CHANGE_END] 2026-09-07 104-MVP界面 -->
+</body>
+</html>

@@ -1,0 +1,3 @@
+# [AGENT_CHANGE_BEGIN] 2026-09-07 104-MVP协议命名空间
+# package marker
+# [AGENT_CHANGE_END] 2026-09-07 104-MVP协议命名空间

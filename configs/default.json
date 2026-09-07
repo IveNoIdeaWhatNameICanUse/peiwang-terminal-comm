@@ -1,0 +1,14 @@
+{
+  "remote_ip": "127.0.0.1",
+  "remote_port": 2404,
+  "local_ip": "",
+  "local_port": 0,
+  "common_address": 1,
+  "originator": 0,
+  "points": [
+    {"ioa": 1, "type_id": 1, "name": "断路器位置", "category": "遥信", "value": null, "quality": 0},
+    {"ioa": 100, "type_id": 13, "name": "A相电压", "category": "遥测", "value": null, "quality": 0},
+    {"ioa": 200, "type_id": 45, "name": "断路器遥控", "category": "遥控", "value": null, "quality": 0},
+    {"ioa": 300, "type_id": 50, "name": "功率设定", "category": "遥调", "value": null, "quality": 0}
+  ]
+}

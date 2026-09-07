@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2026-09-07 配网终端通讯开源调研与技术方案</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #fff;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #0f766e;
+    --warn: #b45309;
+    --ok: #047857;
+    --bad: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    background: linear-gradient(180deg, #ecfdf5 0%, var(--bg) 220px);
+    line-height: 1.65;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.75rem; margin: 0 0 8px; }
+  h2 { font-size: 1.25rem; margin: 36px 0 12px; border-bottom: 2px solid var(--accent); padding-bottom: 6px; }
+  h3 { font-size: 1.05rem; margin: 22px 0 8px; color: var(--accent); }
+  .meta { color: var(--muted); font-size: 0.92rem; margin-bottom: 24px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 12px 0;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; background: var(--card); }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; vertical-align: top; text-align: left; }
+  th { background: #f0fdfa; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem; margin-right: 4px; }
+  .t-ok { background: #d1fae5; color: var(--ok); }
+  .t-warn { background: #ffedd5; color: var(--warn); }
+  .t-bad { background: #fee2e2; color: var(--bad); }
+  .t-info { background: #e0f2fe; color: #075985; }
+  ul { padding-left: 1.2rem; }
+  code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  .rec { border-left: 4px solid var(--accent); }
+  .q { background: #fffbeb; border: 1px solid #fde68a; }
+  pre {
+    background: #111827; color: #e5e7eb; padding: 14px; border-radius: 8px;
+    overflow-x: auto; font-size: 0.82rem; line-height: 1.45;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>配网终端通讯工具：开源调研与技术方案</h1>
+  <div class="meta">
+    日期：2026-09-07　状态：待确认　范围：IEC 60870-5-101/104 模拟主站、四遥测试、本地固定 IP 绑定
+  </div>
+
+  <div class="card rec">
+    <strong>结论摘要</strong>
+    <ul>
+      <li>没有单一开源项目同时完整覆盖「101+104 模拟主站 + 四遥测试 UI + 本地固定 IP 绑定」。</li>
+      <li>协议层应以 <code>lib60870</code> 为基石（唯一同时覆盖 101/104，且原生支持本地 IP 绑定）。</li>
+      <li>产品/交互层优先参考 <code>Karl-Dai/IEC60870-5-104-Simulator</code> 与 <code>aixi224/IEC104_Tester</code>，不要整仓 fork 其协议栈。</li>
+      <li>推荐技术路线：Python 桌面壳（pywebview）+ 统一主站服务层 + lib60870（104 可用 c104，101 走 C 扩展/ctypes）。</li>
+    </ul>
+  </div>
+
+  <h2>1. 需求映射</h2>
+  <table>
+    <tr><th>需求</th><th>开源现状</th><th>含义</th></tr>
+    <tr><td>101 模拟主站</td><td>成熟库少，完整 GUI 几乎没有</td><td>101 必须自建 UI/流程，协议依赖 lib60870 CS101</td></tr>
+    <tr><td>104 模拟主站</td><td>库与模拟器都很丰富</td><td>可大量复用协议与交互设计</td></tr>
+    <tr><td>四遥测试</td><td>多家工具覆盖遥信/遥测/遥控/设点</td><td>交互模型可抄，点表与流程需按配网终端定制</td></tr>
+    <tr><td>绑定本地固定 IP</td><td>多数 GUI 未暴露；lib60870 原生支持</td><td>选型时必须优先有 <code>setLocalAddress</code> 能力的栈</td></tr>
+  </table>
+
+  <h2>2. 项目筛选（高价值优先）</h2>
+
+  <h3>2.1 入选项目对比</h3>
+  <table>
+    <tr>
+      <th>项目</th><th>解决什么</th><th>架构/技术</th><th>维护</th><th>许可</th><th>参考价值</th>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/mz-automation/lib60870">mz-automation/lib60870</a></td>
+      <td>101/104 协议栈（主站/从站）</td>
+      <td>C99；CS101 平衡/非平衡；CS104 client/server；HAL；可选 TLS</td>
+      <td><span class="tag t-ok">活跃</span> ~595★，2026-08 仍有推送，v2.4.x</td>
+      <td>GPL-3.0（商业双许可）</td>
+      <td><span class="tag t-ok">最高</span> 协议基石 + 本地 IP API</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Fraunhofer-FIT-DIEN/iec104-python">Fraunhofer iec104-python / c104</a></td>
+      <td>用 Python 快速做 104 主站/从站仿真</td>
+      <td>pybind11 包装 lib60870；Client/Server/Station/Point</td>
+      <td><span class="tag t-ok">活跃</span> ~104★，PyPI 有包，2026 仍更新</td>
+      <td>GPL-3.0</td>
+      <td><span class="tag t-ok">高</span> 104 Python 接入首选</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Karl-Dai/IEC60870-5-104-Simulator">Karl-Dai/IEC60870-5-104-Simulator</a></td>
+      <td>跨平台 104 主站+从站桌面模拟器</td>
+      <td>Rust 协议核 + Tauri2 + Vue3；core 与 UI 解耦</td>
+      <td><span class="tag t-ok">极活跃</span> 2026-09 持续发版（~v1.15）</td>
+      <td>MIT</td>
+      <td><span class="tag t-ok">高</span> 产品架构/UI/多 CA 设计</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/aixi224/IEC104_Tester">aixi224/IEC104_Tester</a></td>
+      <td>104 主/从测试工具（点表、报文、Excel）</td>
+      <td>纯 Python 协议 + Tkinter GUI</td>
+      <td><span class="tag t-warn">一般</span> 2026-08 有推送，星少</td>
+      <td>MIT</td>
+      <td><span class="tag t-ok">高</span> 中文四遥测试工作流</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/FreyrSCADA/IEC-60870-5-104">FreyrSCADA 101/104</a></td>
+      <td>商业 SDK + 演示模拟器</td>
+      <td>C/C++/C#/Python 多语言演示</td>
+      <td>仓库作宣传/评估用</td>
+      <td>商业，非自由复用</td>
+      <td><span class="tag t-warn">中</span> 仅作功能清单对照</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/MaximPriyatkin/py_iec104">MaximPriyatkin/py_iec104</a></td>
+      <td>104 本地联调 CLI 台架</td>
+      <td>纯 Python；config.toml + CSV 点表</td>
+      <td><span class="tag t-warn">低热度</span> 0★，2026-04</td>
+      <td>MIT</td>
+      <td><span class="tag t-info">低-中</span> 配置驱动思路可参考</td>
+    </tr>
+  </table>
+
+  <h3>2.2 明确降权/避免整仓复用</h3>
+  <ul>
+    <li><strong>纯自研 Python 协议栈作为长期底座</strong>（IEC104_Tester / py_iec104）：上手快，但链路层/窗口参数/异常路径易欠严谨，101 更难补齐。</li>
+    <li><strong>FreyrSCADA 源码嵌入产品</strong>：本质是商业评估包，许可不适合作内部工具底座。</li>
+    <li><strong>整仓 fork Karl-Dai</strong>：104 产品化很好，但无 101；Rust 栈与现有 Python 工具链割裂；本地 IP 绑定需另核。</li>
+    <li><strong>仅用 c104</strong>：无 101，且需确认本地 bind API 是否完整暴露；不足时要回落 lib60870 C API。</li>
+  </ul>
+
+  <h2>3. 值得复用 vs 应避免</h2>
+  <div class="card">
+    <h3>值得复用</h3>
+    <ul>
+      <li><code>CS104_Connection_setLocalAddress(localIp, localPort)</code>：直接满足「绑定本地固定 IP」。</li>
+      <li>协议核与 UI 解耦（Karl-Dai：core + event channel + desktop shell）。</li>
+      <li>四遥测试工作流：点表管理、总召唤/对时、SBO 预置-执行、报文监视与解析、Excel/JSON 场景配置（IEC104_Tester）。</li>
+      <li>多 CA / 点号分层展示（Karl-Dai Master）。</li>
+      <li>c104 的高层对象模型：Connection → Station → Point → 回调。</li>
+    </ul>
+    <h3>应避免</h3>
+    <ul>
+      <li>UI 与协议状态机揉在一个脚本文件里，无法单测。</li>
+      <li>101/104 各写一套互不兼容的点表模型。</li>
+      <li>默认 0.0.0.0 / 系统选源地址，却声称支持多网卡现场。</li>
+      <li>GPL 依赖进入闭源商业分发而不评估合规（若仅内部工具通常可接受，但仍需明确）。</li>
+      <li>过早做从站模拟、文件传输、TLS/62351，挤压 MVP。</li>
+    </ul>
+  </div>
+
+  <h2>4. 技术方案（待确认）</h2>
+
+  <h3>方案对比</h3>
+  <table>
+    <tr><th>方案</th><th>技术栈</th><th>优点</th><th>风险</th><th>推荐</th></tr>
+    <tr>
+      <td><strong>A. Python 桌面 + lib60870</strong></td>
+      <td>Python 3.11+、pywebview、c104（104）、lib60870/ctypes 或薄 C 扩展（101）、pyserial、JSON/Excel</td>
+      <td>与现有规约工具习惯一致；101/104 可统一；本地 IP 可落地；交付快</td>
+      <td>需处理 GPL；Windows 下原生扩展打包；101 串口现场差异大</td>
+      <td><span class="tag t-ok">推荐</span></td>
+    </tr>
+    <tr>
+      <td>B. Rust 协议核 + Tauri</td>
+      <td>对齐 Karl-Dai：Rust+Tokio+Tauri+Vue</td>
+      <td>性能与产品化强；MIT 友好</td>
+      <td>无现成 101；学习/工期高；与现有 Python 工具不统一</td>
+      <td>备选（长期产品化）</td>
+    </tr>
+    <tr>
+      <td>C. 纯 Python 自研协议</td>
+      <td>对齐 IEC104_Tester</td>
+      <td>零原生依赖、MIT、改得快</td>
+      <td>101 成本高；协议正确性/稳定性风险大；本地 bind 要自己做</td>
+      <td>不推荐作底座</td>
+    </tr>
+  </table>
+
+  <div class="card rec">
+    <strong>推荐方案 A 细节</strong>
+    <ul>
+      <li><strong>壳</strong>：pywebview 桌面应用；弹窗统一走应用内悬浮窗（与 MaintainTool 同类约定一致）。</li>
+      <li><strong>应用服务</strong>：<code>MasterService</code> 抽象；<code>Iec104Master</code> / <code>Iec101Master</code> 适配器；统一点表、会话、命令、报文事件总线。</li>
+      <li><strong>104</strong>：优先 c104；若缺本地 IP 绑定 API，则对 lib60870 做薄封装补齐 <code>setLocalAddress</code>。</li>
+      <li><strong>101</strong>：lib60870 CS101_Master + 串口参数（平衡/非平衡、链路地址、波特率等）。</li>
+      <li><strong>数据</strong>：JSON 工程文件 + 可选 Excel 点表导入；会话日志可导出。</li>
+    </ul>
+  </div>
+
+  <h3>系统架构（推荐）</h3>
+  <pre>
+┌──────────────────────────────────────────────┐
+│  UI (HTML/JS in pywebview)                   │
+│  连接配置 | 点表/四遥 | 报文监视 | 结果面板   │
+└─────────────────┬────────────────────────────┘
+                  │ JS ↔ Python bridge
+┌─────────────────▼────────────────────────────┐
+│  App Core                                    │
+│  ProjectStore / PointModel / EventBus        │
+│  TestWorkflow (GI/时钟/遥控SBO/遥调)         │
+└───────────┬─────────────────────┬────────────┘
+            │                     │
+   ┌────────▼────────┐   ┌────────▼────────┐
+   │ Iec104Master    │   │ Iec101Master    │
+   │ c104 / lib60870 │   │ lib60870 CS101  │
+   │ + local bind    │   │ + serial port   │
+   └────────┬────────┘   └────────┬────────┘
+            │ TCP                │ RS232/485
+            ▼                    ▼
+        配网终端              配网终端
+  </pre>
+
+  <h2>5. MVP 范围</h2>
+  <table>
+    <tr><th>纳入 MVP</th><th>暂不纳入</th></tr>
+    <tr>
+      <td>
+        <ul>
+          <li>104 模拟主站：连接、STARTDT、总召唤、时钟同步</li>
+          <li>四遥：遥信/遥测监视；单/双点遥控（含 SBO）；浮点/归一化设点（遥调）</li>
+          <li>本地网卡/IP 选择并绑定源地址</li>
+          <li>点表增删改、JSON 保存、基础报文监视（收发十六进制+简要解析）</li>
+          <li>101 模拟主站最小集：串口打开、非平衡主站轮询或平衡模式二选一（先定一种）、总召唤与基础四遥</li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li>从站模拟器</li>
+          <li>文件传输、参数下载全套、电度量复杂统计</li>
+          <li>TLS / IEC 62351</li>
+          <li>104 冗余组、多主并发压力测试</li>
+          <li>完整一致性测试套件、自动报告</li>
+        </ul>
+      </td>
+    </tr>
+  </table>
+
+  <h2>6. 开发顺序</h2>
+  <ol>
+    <li><strong>骨架</strong>：工程结构、pywebview 壳、事件总线、工程/点表模型。</li>
+    <li><strong>104 主站连通</strong>：连接参数 + <em>本地 IP 绑定</em> + STARTDT + 总召唤 + 点值刷新。</li>
+    <li><strong>104 四遥命令</strong>：遥控 SBO、设点、失败/超时反馈、报文监视。</li>
+    <li><strong>101 主站最小通路</strong>：串口 + 链路模式 + 总召唤 + 与 104 共用点表/UI。</li>
+    <li><strong>场景化</strong>：Excel 导入、常用配网点表模板、会话日志导出。</li>
+    <li><strong>硬化</strong>：异常重连、参数校验、打包（PyInstaller）、现场网卡绑定回归。</li>
+  </ol>
+
+  <h2>7. 已确认决策（2026-09-07）</h2>
+  <div class="card rec">
+    <ul>
+      <li>产品形态：Windows 桌面，方案 A（Python + pywebview）。</li>
+      <li>许可：接受 GPL（内部工具，可依赖 lib60870 / c104）。</li>
+      <li>101：优先平衡模式；串口细节后续再定。本阶段不实现 101。</li>
+      <li>交付节奏：<strong>先交付 104 MVP</strong>，101 后续迭代。</li>
+      <li>本地绑定范围：固定本地 IP + 可指定本地端口 + 多网卡列表选择 + 连接失败明确提示。</li>
+    </ul>
+  </div>
+
+  <h2>8. 关键改动点（待确认后编码）</h2>
+  <div class="card">
+    <h3>改什么</h3>
+    <ul>
+      <li>新建工程骨架：<code>app/</code>（pywebview 入口）、<code>ui/</code>（前端）、<code>core/</code>（点表/事件/工程）、<code>protocol/iec104/</code>（主站适配）、<code>net/</code>（网卡枚举与本地绑定）。</li>
+      <li>104 模拟主站：连接、STARTDT、总召唤、时钟同步；遥信/遥测监视；遥控 SBO；设点（遥调）。</li>
+      <li>本地绑定：枚举本机网卡 IPv4；选择本地 IP；可选本地端口（空=系统分配）；连接前 setLocalAddress；失败分类提示（网卡不存在/绑定失败/对端拒绝/超时）。</li>
+      <li>UI：连接配置、点表、四遥操作、报文监视；弹窗走应用内悬浮窗，不用原生 alert/confirm。</li>
+      <li>依赖：c104（优先）+ 必要时 lib60870 薄封装补本地 bind；GPL 声明文件。</li>
+    </ul>
+    <h3>不改 / 不做（本阶段）</h3>
+    <ul>
+      <li>不做 101、从站模拟、文件传输、TLS、冗余组。</li>
+      <li>不引入 Tauri/Rust；不自研纯 Python 104 协议栈作底座。</li>
+    </ul>
+    <h3>验证方式</h3>
+    <ul>
+      <li>本机多网卡：选指定 IP 连接从站，用抓包/日志确认源地址正确。</li>
+      <li>指定/不指定本地端口均可连通；错误 IP/端口有明确中文提示。</li>
+      <li>对测试从站完成总召唤、遥控 SBO、设点闭环。</li>
+    </ul>
+    <h3>残留风险</h3>
+    <ul>
+      <li>c104 若未暴露本地 bind，需补 ctypes/扩展，略增工期。</li>
+      <li>Windows 下网卡枚举与权限、防火墙可能导致绑定成功但不通，需提示排查。</li>
+      <li>PyInstaller 打包含原生库时需单独验证。</li>
+    </ul>
+  </div>
+
+  <div class="meta" style="margin-top:28px;">
+    请确认第 8 节「关键改动点」后开始编码。当前工作区除本方案文档外尚未创建业务代码。
+  </div>
+</div>
+</body>
+</html>
+
