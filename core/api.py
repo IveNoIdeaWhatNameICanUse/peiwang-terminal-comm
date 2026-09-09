@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from core.events import EventBus
+from core.eventlog import EventLog
 from core.project import PointDef, ProjectStore, SessionDef, category_for_type
 from net import nics_as_dicts
 from protocol.iec104 import ConnectParams, Iec104Master, MasterError, TYPE_NAMES
@@ -22,6 +24,10 @@ _CSV_COLUMN_ALIASES = {
     "category": ["category", "类别", "分类", "四遥", "所属类别", "类别名称"],
     "value": ["value", "值", "数值", "当前值"],
     "quality": ["quality", "品质", "质量", "q"],
+    "upper_limit": ["upper_limit", "上限", "越上限", "遥测上限"],
+    "lower_limit": ["lower_limit", "下限", "越下限", "遥测下限"],
+    "dead_band": ["dead_band", "死区", "突变死区"],
+    "no_change_time": ["no_change_time", "长期不变", "不变告警", "不复位时间"],
 }
 
 _CSV_TYPE_TEXT = {
@@ -75,6 +81,9 @@ class ApiBridge:
         self.bus = bus or EventBus()
         self.store = ProjectStore()
         self._masters: Dict[str, Iec104Master] = {}
+        self._event_logs: Dict[str, EventLog] = {}
+        self._init_pending: Dict[str, bool] = {}   # 连接后初始化未完成(期间事件不计)
+        self._init_since: Dict[str, float] = {}
         self._ui_push: Optional[Callable[[dict], None]] = None
         self._frames: List[dict] = []
         self._lock = threading.Lock()
@@ -104,17 +113,102 @@ class ApiBridge:
             except Exception:
                 pass
 
+    def _event_log(self, sid: str) -> EventLog:
+        if sid not in self._event_logs:
+            self._event_logs[sid] = EventLog()
+        return self._event_logs[sid]
+
     def _on_master_event(self, event: dict) -> None:
+        if event.get("type") == "connection":
+            sid = str(event.get("session_id") or self.store.config.active_session_id)
+            st = event.get("state")
+            if st == "connected":
+                self._init_pending[sid] = True
+                self._init_since[sid] = time.time()
+                self._event_log(sid).on_link("start")
+            elif st == "disconnected":
+                self._init_pending.pop(sid, None)
+                self._event_log(sid).on_link("stop")
         if event.get("type") == "frame":
             with self._lock:
                 self._frames.append(event)
                 if len(self._frames) > 800:
                     self._frames = self._frames[-800:]
+            # 总召唤激活终止(100/10)视为初始化完成
+            asdu = event.get("asdu") or {}
+            if asdu.get("type_id") == 100 and asdu.get("cot") == 10:
+                self._init_pending.pop(
+                    str(event.get("session_id") or self.store.config.active_session_id), None
+                )
         if event.get("type") == "points":
             sid = str(event.get("session_id") or self.store.config.active_session_id)
             changed = self.store.update_values(sid, event.get("objects") or [])
+            # 初始化窗口：连接后总召唤激活终止前的首次上送不计事件/统计
+            if self._init_pending.get(sid):
+                if time.time() - self._init_since.get(sid, 0.0) > 60.0:
+                    self._init_pending.pop(sid, None)  # 兜底:60s 后视为完成
+                else:
+                    # SOE（带时标遥信 30/31）是关键事件，初始化窗口内也记录
+                    soe_objs = [
+                        o for o in (event.get("objects") or [])
+                        if int(o.get("type_id") or 0) in (30, 31)
+                    ]
+                    if soe_objs:
+                        slog = self._event_log(sid)
+                        smeta = {p.ioa: p for p in self.store.config.session_points(sid)}
+                        for obj in soe_objs:
+                            ioa = int(obj.get("ioa") or 0)
+                            sp = smeta.get(ioa)
+                            snm = (sp.name if sp and sp.name else f"IOA-{ioa}")
+                            slog.on_yx(ioa, snm, obj.get("value"), is_soe=True)
+                    event = {**event, "points": changed}
+                    self._push(event)
+                    return
+            # 事件记录：SOE/COS/遥测统计（排除总召唤/组召唤响应等首次全量上送）
+            log = self._event_log(sid)
+            pts = self.store.config.session_points(sid)
+            meta = {}
+            for p in pts:
+                meta[p.ioa] = p
+            for obj in event.get("objects") or []:
+                # COT=5(响应组召唤)/20(响应站召唤) 为首次全量/应答上送，不计变位
+                if int(obj.get("cot") or 0) in (5, 20):
+                    continue
+                ioa = int(obj.get("ioa") or 0)
+                tid = int(obj.get("type_id") or 0)
+                p = meta.get(ioa)
+                nm = (p.name if p and p.name else f"IOA-{ioa}")
+                val = obj.get("value")
+                if p and p.category == "遥信":
+                    log.on_yx(ioa, nm, val, is_soe=tid in (30, 31))
+                elif p and p.category == "遥测":
+                    log.on_yc(
+                        ioa, nm, val,
+                        upper=p.upper_limit, lower=p.lower_limit,
+                        dead_band=p.dead_band, no_change_time=p.no_change_time,
+                    )
             event = {**event, "points": changed}
         self._push(event)
+
+    def _record_control(self, ioa: int, action: str, on: bool) -> None:
+        sid = self.store.config.active_session_id
+        nm = ""
+        for p in self.store.config.session_points(sid):
+            if p.ioa == int(ioa):
+                nm = p.name or f"IOA-{ioa}"
+                break
+        self._event_log(sid).on_control(int(ioa), nm or f"IOA-{ioa}", action, bool(on))
+
+    def _record_adjust(self, ioa: int, action: str, value=None) -> None:
+        sid = self.store.config.active_session_id
+        nm = ""
+        for p in self.store.config.session_points(sid):
+            if p.ioa == int(ioa):
+                nm = p.name or f"IOA-{ioa}"
+                break
+        if not nm:
+            nm = "固化(整区)" if int(ioa) == 0 and action == "exec" else f"IOA-{ioa}"
+        self._event_log(sid).on_adjust(int(ioa), nm, action, value)
 
     def _ensure_master(self, sid: str) -> Iec104Master:
         if sid not in self._masters:
@@ -289,6 +383,15 @@ class ApiBridge:
     def upsert_point(self, point: dict, sid: Optional[str] = None) -> dict:
         sid = sid or self.store.config.active_session_id
         tid = int(point.get("type_id") or 0)
+
+        def _optf(v):
+            if v in (None, "", 0, 0.0):
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
         p = PointDef(
             ioa=int(point["ioa"]),
             type_id=tid,
@@ -296,6 +399,10 @@ class ApiBridge:
             category=str(point.get("category") or "") or category_for_type(tid),
             value=point.get("value"),
             quality=int(point.get("quality") or 0),
+            upper_limit=_optf(point.get("upper_limit")),
+            lower_limit=_optf(point.get("lower_limit")),
+            dead_band=_optf(point.get("dead_band")),
+            no_change_time=_optf(point.get("no_change_time")),
         )
         self.store.upsert_point(sid, p)
         return {"ok": True, "project": self.get_project()}
@@ -395,6 +502,10 @@ class ApiBridge:
                     cat_s = cell("category")
                     val_s = cell("value")
                     q_s = cell("quality")
+                    up_s = cell("upper_limit")
+                    low_s = cell("lower_limit")
+                    db_s = cell("dead_band")
+                    nc_s = cell("no_change_time")
                 elif mode == "vendor":
                     grp = (row[0] if row else "").strip()
                     info = _VENDOR_GROUPS.get(grp)
@@ -407,6 +518,10 @@ class ApiBridge:
                     cat_s = info[0]
                     val_s = ""
                     q_s = ""
+                    up_s = ""
+                    low_s = ""
+                    db_s = ""
+                    nc_s = ""
                 else:  # plain: 无表头默认 [IOA, 名称, 类型]
                     ioa_s = (row[0] if len(row) > 0 else "").strip()
                     name_s = (row[1] if len(row) > 1 else "").strip()
@@ -414,6 +529,13 @@ class ApiBridge:
                     cat_s = ""
                     val_s = ""
                     q_s = ""
+                    up_s = ""
+                    low_s = ""
+                    db_s = ""
+                    nc_s = ""
+
+                def _optf(s: str):
+                    return float(s) if s and s.strip().lstrip("-").replace(".", "", 1).isdigit() else None
 
                 if not ioa_s.isdigit():
                     skipped.append(f"第{i}行：IOA 无效“{ioa_s}”")
@@ -431,6 +553,10 @@ class ApiBridge:
                         category=cat,
                         value=val_s if val_s != "" else None,
                         quality=int(q_s) if q_s.isdigit() else 0,
+                        upper_limit=_optf(up_s),
+                        lower_limit=_optf(low_s),
+                        dead_band=_optf(db_s),
+                        no_change_time=_optf(nc_s),
                     ),
                 )
                 count += 1
@@ -527,6 +653,7 @@ class ApiBridge:
         return self._cmd(lambda: self._active_master().clock_sync())
 
     def single_command(self, ioa: int, on: bool, select: bool) -> dict:
+        self._record_control(ioa, "sel" if select else "exec", on)
         return self._cmd_confirm(
             lambda m: m.single_command(int(ioa), bool(on), bool(select)),
             type_ids=(45,), cots=(7, 10),
@@ -534,6 +661,7 @@ class ApiBridge:
         )
 
     def double_command(self, ioa: int, state: int, select: bool) -> dict:
+        self._record_control(ioa, "sel" if select else "exec", state == 1)
         return self._cmd_confirm(
             lambda m: m.double_command(int(ioa), int(state), bool(select)),
             type_ids=(46,), cots=(7, 10),
@@ -643,6 +771,7 @@ class ApiBridge:
     def cancel_command(self, ioa: int, kind: str) -> dict:
         """遥控撤销（COT=8 去激活：sc/dc），等停止激活确认后弹窗结果。"""
         tid = 46 if kind == "dc" else 45
+        self._record_control(ioa, "cancel", False)
 
         def fn(m):
             if kind == "dc":
@@ -662,6 +791,7 @@ class ApiBridge:
         else:
             cots = (7,)  # 固化：激活(6) → 激活确认(7)
             ok_text = "固化(激活)成功"
+        self._record_adjust(ioa, "preset" if select else "exec", value)
         return self._cmd_confirm(
             lambda m: m.preset_param(int(ioa), float(value), bool(select), tid=tid, area=int(area)),
             type_ids=(tid,), cots=cots,
@@ -671,6 +801,7 @@ class ApiBridge:
     def fix_setpoint(self, area: int = 1) -> dict:
         """国网定值固化：无需选中点/值——203 VSQ=0 + 区号(2B) + PI=00(S/E=0)，COT=6。
         固化成功后由 UI 将“修改值”提交为点表“值”。"""
+        self._record_adjust(0, "exec", None)
         return self._cmd_confirm(
             lambda m: m.preset_param(0, 0.0, select=False, tid=203, area=int(area)),
             type_ids=(203,), cots=(7,),
@@ -681,6 +812,7 @@ class ApiBridge:
     def cancel_setpoint(self, ioa: int, kind: str = "", area: int = 1) -> dict:
         """定值整定撤销(COT=8)：等停止激活确认后弹窗结果。"""
         tid = 203 if self.store.config.protocol_variant == "国网" else 55
+        self._record_adjust(ioa, "cancel", None)
         return self._cmd_confirm(
             lambda m: m.preset_param(int(ioa), 0.0, select=False, cancel=True, tid=tid, area=int(area)),
             type_ids=(tid,), cots=(9, 7),
@@ -703,6 +835,27 @@ class ApiBridge:
         with self._lock:
             self._frames.clear()
         return {"ok": True}
+
+    # ---- 事件记录 / 四遥统计 ----
+
+    def get_events(self, sid: str = "", limit: int = 500) -> dict:
+        sid = sid or self.store.config.active_session_id
+        log = self._event_log(sid)
+        return {"ok": True, "events": log.snapshot(limit)}
+
+    def clear_events(self, sid: str = "") -> dict:
+        sid = sid or self.store.config.active_session_id
+        self._event_log(sid).clear()
+        return {"ok": True}
+
+    def get_stats(self, sid: str = "") -> dict:
+        sid = sid or self.store.config.active_session_id
+        names, cats = {}, {}
+        for p in self.store.config.session_points(sid):
+            names[p.ioa] = p.name or f"IOA-{p.ioa}"
+            cats[p.ioa] = p.category
+        rows = self._event_log(sid).stats_rows(names, cats)
+        return {"ok": True, "rows": rows}
 
     def _cmd(self, fn) -> dict:
         try:

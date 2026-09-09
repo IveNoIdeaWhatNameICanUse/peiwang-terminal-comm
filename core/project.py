@@ -18,6 +18,10 @@ class PointDef:
     value: Any = None
     quality: int = 0
     data_type: int = 0  # 实际定值/参数数据类型（202 响应 dtype），0=未知
+    upper_limit: Optional[float] = None   # 遥测越上限阈值（None=不统计）
+    lower_limit: Optional[float] = None   # 遥测越下限阈值（None=不统计）
+    dead_band: Optional[float] = None     # 遥测突变死区（None=不统计）
+    no_change_time: Optional[float] = None  # 遥测长期不变告警时间(秒)（None=不统计）
 
 
 # 四遥类别（按 IEC 104 类型标识归类）
@@ -193,6 +197,15 @@ class ProjectConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectConfig":
         def _mk_point(p: dict) -> PointDef:
+            def _opt(key):
+                v = p.get(key)
+                if v in (None, "", 0):
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+
             return PointDef(
                 ioa=int(p.get("ioa") or 0),
                 type_id=int(p.get("type_id") or 0),
@@ -201,6 +214,10 @@ class ProjectConfig:
                 value=p.get("value"),
                 quality=int(p.get("quality") or 0),
                 data_type=int(p.get("data_type") or 0),
+                upper_limit=_opt("upper_limit"),
+                lower_limit=_opt("lower_limit"),
+                dead_band=_opt("dead_band"),
+                no_change_time=_opt("no_change_time"),
             )
 
         pts = [_mk_point(p) for p in data.get("points", [])]

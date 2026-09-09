@@ -937,17 +937,22 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             "tab_text": f"主站·{session_name(sid)}",
             "pts_panel": None,
             "mon_panel": None,
+            "evt_panel": None,
             "reload": None,
         }
         pts = build_points_panel(content, view)
         mon_frame, mon = build_monitor_panel(content, sid)
+        evt_frame, evt = build_event_panel(content, sid)
         pts.grid(row=0, column=0, sticky="nsew")
         mon_frame.grid(row=0, column=0, sticky="nsew")
+        evt_frame.grid(row=0, column=0, sticky="nsew")
         content.rowconfigure(0, weight=1)
         content.columnconfigure(0, weight=1)
         view["pts_panel"] = pts
         view["mon_panel"] = mon_frame
         view["mon"] = mon
+        view["evt_panel"] = evt_frame
+        view["evt"] = evt
 
         ttk.Label(side, text="功能菜单", font=("", 10, "bold")).pack(anchor="w", pady=(0, 4), padx=4)
         ttk.Radiobutton(
@@ -958,18 +963,35 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             side, text="报文监视", variable=view["view_var"], value="报文监视",
             command=lambda v=view: _switch_view(v),
         ).pack(anchor="w", pady=2, padx=4)
+        ttk.Radiobutton(
+            side, text="事件记录", variable=view["view_var"], value="事件记录",
+            command=lambda v=view: _switch_view(v),
+        ).pack(anchor="w", pady=2, padx=4)
+        ttk.Button(
+            side, text="四遥统计",
+            command=lambda s=sid: open_stats_dialog(s),
+        ).pack(anchor="w", fill=tk.X, pady=(8, 2), padx=4)
+        evt_frame.grid_remove()  # 默认显示四遥状态
         mon_frame.grid_remove()  # 默认显示四遥状态
 
         main_nb.add(frame, text=view["tab_text"])
         station_views[sid] = view
 
     def _switch_view(view) -> None:
-        if view["view_var"].get() == "报文监视":
-            view["pts_panel"].grid_remove()
-            view["mon_panel"].grid()
-        else:
-            view["mon_panel"].grid_remove()
-            view["pts_panel"].grid()
+        v = view["view_var"].get()
+        for name, panel in (
+            ("四遥状态", view["pts_panel"]),
+            ("报文监视", view["mon_panel"]),
+            ("事件记录", view["evt_panel"]),
+        ):
+            if panel is None:
+                continue
+            if name == v:
+                panel.grid()
+                if name == "事件记录" and view.get("evt"):
+                    _reload_events(view["sid"])
+            else:
+                panel.grid_remove()
 
     def remove_station_tab(sid: str) -> None:
         view = station_views.pop(sid, None)
@@ -981,6 +1003,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         except tk.TclError:
             pass
         monitors.pop(sid, None)
+        event_panels.pop(sid, None)
 
     def ensure_station_tabs():
         for s in api.list_sessions().get("sessions") or []:
@@ -998,6 +1021,175 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
 
     # ---- 报文监视面板（每个主站选项卡内，左侧菜单切换）----
     monitors: dict = {}
+
+    # ---- 事件记录 / 四遥统计 ----
+    event_panels: dict = {}
+
+    def build_event_panel(parent, sid: str):
+        """构建该主站的事件记录面板（SOE/COS/遥控/遥调）；返回 (frame, ctx)。"""
+        frame = ttk.Frame(parent, padding=4)
+        toolbar = ttk.Frame(frame)
+        toolbar.pack(fill=tk.X)
+        ttk.Label(toolbar, text=f"事件记录：{session_name(sid)}").pack(side=tk.LEFT, padx=2)
+        status_lbl = ttk.Label(toolbar, text="", foreground="#2563eb")
+        status_lbl.pack(side=tk.LEFT, padx=8)
+
+        def _clear():
+            api.clear_events(sid)
+            _reload_events(sid)
+
+        ttk.Button(toolbar, text="清空事件", command=_clear).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="刷新", command=lambda: _reload_events(sid)).pack(side=tk.LEFT, padx=2)
+        ttk.Label(toolbar, text="双击定位点表", foreground="#666").pack(side=tk.LEFT, padx=8)
+
+        tree = ttk.Treeview(frame, columns=("ts", "info", "content", "kind"), show="headings", height=12)
+        for c, t, w in [
+            ("ts", "接收时间", 150),
+            ("info", "信息体", 180),
+            ("content", "事件内容", 460),
+            ("kind", "事件类别", 110),
+        ]:
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor=tk.W)
+        # 事件类别配色
+        tree.tag_configure("soe", foreground="#15803d")      # SOE 绿
+        tree.tag_configure("cos", foreground="#b45309")      # 遥信变位 黄
+        tree.tag_configure("ctrl", foreground="#dc2626")     # 遥控 红
+        tree.tag_configure("adj", foreground="#1d4ed8")      # 遥调 蓝
+        tree.tag_configure("mea", foreground="#7c3aed")      # 遥测 紫
+        tree.tag_configure("sys", foreground="#475569")      # 链路启动/停止 灰
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _tag_of(kind: str):
+            k = kind or ""
+            if k == "sys":
+                return "sys"
+            if k.startswith("ctrl"):
+                return "ctrl"
+            if k.startswith("adj"):
+                return "adj"
+            if k.startswith("mea"):
+                return "mea"
+            if k == "soe":
+                return "soe"
+            return "cos"
+
+        ctx = {
+            "frame": frame,
+            "tree": tree,
+            "sid": sid,
+            "status": status_lbl,
+            "last_n": 0,
+            "_tag_of": _tag_of,
+        }
+        event_panels[sid] = ctx
+        # 定时刷新（面板可见时），保证事件实时更新
+        def _tick():
+            ctx2 = event_panels.get(sid)
+            if ctx2 and ctx2 is ctx:
+                view = station_views.get(sid)
+                if view and view["view_var"].get() == "事件记录":
+                    _reload_events(sid, silent=True)
+            win.after(2000, _tick)
+
+        win.after(2000, _tick)
+        return frame, ctx
+
+    def _reload_events(sid: str, silent: bool = False) -> None:
+        ctx = event_panels.get(sid)
+        if not ctx:
+            return
+        try:
+            r = api.get_events(sid, limit=2000)
+            evs = r.get("events") or []
+        except Exception:
+            return
+        if len(evs) == ctx["last_n"]:
+            return
+        tree = ctx["tree"]
+        tree.delete(*tree.get_children())
+        for e in evs:
+            tree.insert(
+                "", tk.END,
+                values=(e.get("ts", ""), f"[{e.get('ioa', '')}] {e.get('name', '')}",
+                        e.get("content", ""), e.get("kind", "")),
+                tags=(ctx["_tag_of"](e.get("kind", "")),),
+            )
+        ctx["last_n"] = len(evs)
+        if not silent:
+            ctx["status"].config(text=f"共 {len(evs)} 条")
+
+    def open_stats_dialog(sid: str) -> None:
+        """四遥统计对话框（遥信/遥测/遥控/遥调 四个页签）。"""
+        dlg = tk.Toplevel(win)
+        dlg.title(f"四遥统计 - {session_name(sid)}")
+        dlg.transient(win)
+        dlg.grab_set()
+        win.update_idletasks()
+        _x = win.winfo_rootx() + max(0, (win.winfo_width() - 660) // 2)
+        _y = win.winfo_rooty() + max(0, (win.winfo_height() - 560) // 2)
+        dlg.geometry(f"660x560+{_x}+{_y}")
+
+        nb = ttk.Notebook(dlg)
+        nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        COL_DEFS = {
+            "遥信": [("ioa", "点号", 70), ("name", "名称", 200), ("change", "变位次数", 90), ("soe", "SOE数量", 90)],
+            "遥测": [("ioa", "点号", 70), ("name", "名称", 200), ("up", "越上限", 80), ("down", "越下限", 80), ("dead", "突变死区", 90), ("still", "不变告警", 90)],
+            "遥控": [("ioa", "点号", 70), ("name", "名称", 200), ("seloff", "预选分", 80), ("exeoff", "执行分", 80), ("selon", "预选合", 80), ("exeon", "执行合", 80)],
+            "遥调": [("ioa", "点号", 70), ("name", "名称", 200), ("preset", "预置", 80), ("exec", "执行(固化)", 100), ("cancel", "撤销", 80)],
+        }
+        SUM_DEFS = {
+            "遥信": [("change", "总变位次数"), ("soe", "SOE数量")],
+            "遥测": [("up", "总越上限次数"), ("down", "总越下限次数"), ("dead", "突变死区次数"), ("still", "长期不变告警次数")],
+            "遥控": [("selon", "总预选合次数"), ("seloff", "总预选分次数"), ("exeon", "总执行合次数"), ("exeoff", "总执行分次数")],
+            "遥调": [("preset", "总预置次数"), ("exec", "总执行次数"), ("cancel", "总撤销次数")],
+        }
+        tabs = {}
+        for cat, cols in COL_DEFS.items():
+            f = ttk.Frame(nb, padding=6)
+            nb.add(f, text=cat)
+            sf = ttk.Frame(f)
+            sf.pack(fill=tk.X, pady=(0, 4))
+            labels = {}
+            for key, title in SUM_DEFS[cat]:
+                lab = ttk.Label(sf, text=f"{title}：0次")
+                lab.pack(side=tk.LEFT, padx=(0, 16))
+                labels[key] = lab
+            tree = ttk.Treeview(f, columns=[c[0] for c in cols], show="headings", height=12)
+            for cid, title, w in cols:
+                tree.heading(cid, text=title)
+                tree.column(cid, width=w, anchor=tk.W if cid == "name" else tk.CENTER)
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            sbb = ttk.Scrollbar(f, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=sbb.set)
+            sbb.pack(side=tk.RIGHT, fill=tk.Y)
+            tabs[cat] = {"tree": tree, "labels": labels}
+
+        def _fill():
+            r = api.get_stats(sid)
+            rows = r.get("rows") or []
+            for cat, t in tabs.items():
+                tree = t["tree"]
+                tree.delete(*tree.get_children())
+                tot = {}
+                for row in rows:
+                    if row.get("cat") != cat:
+                        continue
+                    col_keys = [c[0] for c in COL_DEFS[cat]]
+                    tree.insert("", tk.END, values=[row.get(k, 0) for k in col_keys])
+                    for key, _ in SUM_DEFS[cat]:
+                        tot[key] = tot.get(key, 0) + int(row.get(key) or 0)
+                for key, lab in t["labels"].items():
+                    lab.config(text=f"{dict(SUM_DEFS[cat])[key]}：{tot.get(key, 0)}次")
+
+        ttk.Button(dlg, text="刷新", command=_fill).pack(side=tk.LEFT, padx=10, pady=6)
+        ttk.Button(dlg, text="确定", command=dlg.destroy).pack(side=tk.RIGHT, padx=(4, 10), pady=6)
+        ttk.Button(dlg, text="取消", command=dlg.destroy).pack(side=tk.RIGHT, padx=4, pady=6)
+        _fill()
 
     def build_monitor_panel(parent, sid: str):
         """构建该主站的报文监视面板；返回 (frame, mon)。"""

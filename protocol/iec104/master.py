@@ -231,6 +231,7 @@ class Iec104Master:
 
     def disconnect(self) -> None:
         # [AGENT_CHANGE_BEGIN] 2026-09-07 修复固定本地端口重连10048
+        was_connected = self._connected
         self._stop.set()
         self._connected = False
         sock = self._sock
@@ -251,14 +252,15 @@ class Iec104Master:
         if self._rx_thread and self._rx_thread.is_alive():
             self._rx_thread.join(timeout=2.0)
         self._rx_thread = None
-        self._emit(
-            {
-                "type": "connection",
-                "state": "disconnected",
-                "session_id": self.session_id,
-                "message": "已断开",
-            }
-        )
+        if was_connected:
+            self._emit(
+                {
+                    "type": "connection",
+                    "state": "disconnected",
+                    "session_id": self.session_id,
+                    "message": "已断开",
+                }
+            )
         # [AGENT_CHANGE_END] 2026-09-07 修复固定本地端口重连10048
 
     def general_interrogation(self) -> None:
