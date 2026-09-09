@@ -1,37 +1,97 @@
-# [AGENT_CHANGE_BEGIN] 2026-09-07 104-MVP服务桥
-"""供 UI 调用的 Python API 桥。"""
+# [AGENT_CHANGE_BEGIN] 2026-09-07 多主站API桥
+"""供 UI 调用的 Python API 桥（多主站会话）。"""
 from __future__ import annotations
 
-import json
+import sys
 import threading
 import traceback
-from dataclasses import asdict
+import uuid
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from core.events import EventBus
-from core.project import PointDef, ProjectStore
+from core.project import PointDef, ProjectStore, SessionDef, category_for_type
 from net import nics_as_dicts
 from protocol.iec104 import ConnectParams, Iec104Master, MasterError, TYPE_NAMES
 
 
-class ApiBridge:
-    """暴露给前端（pywebview js_api 或 tk 回调）的统一接口。"""
+_CSV_COLUMN_ALIASES = {
+    "ioa": ["ioa", "信息体地址", "信息对象地址", "点号", "地址", "序号", "信息地址"],
+    "name": ["name", "名称", "点名", "描述", "说明", "备注"],
+    "type_id": ["type_id", "typeid", "类型标识", "类型", "tid", "type"],
+    "category": ["category", "类别", "分类", "四遥", "所属类别", "类别名称"],
+    "value": ["value", "值", "数值", "当前值"],
+    "quality": ["quality", "品质", "质量", "q"],
+}
 
+_CSV_TYPE_TEXT = {
+    "单点遥信": 1, "双点遥信": 3, "步位置": 5, "位串": 7,
+    "归一化遥测": 9, "标度化遥测": 11, "浮点遥测": 13, "短浮点遥测": 13, "累计量": 15,
+    "带时标单点": 30, "带时标双点": 31, "带时标浮点": 36,
+    "单点遥控": 45, "双点遥控": 46, "步调节": 47,
+    "归一化设点": 48, "标度化设点": 49, "浮点设点": 50, "短浮点设点": 50,
+    "遥信": 1, "遥测": 13, "遥控": 45, "遥调": 50,
+}
+
+# 厂家发码表分组（WLD2660 等常见格式：首列 1=遥信 / 2=遥测 / 5=遥控 / 7=遥调）
+_VENDOR_GROUPS = {
+    "1": ("遥信", 1),
+    "2": ("遥测", 13),
+    "5": ("遥控", 45),
+    "7": ("遥调", 50),
+}
+
+
+def _first_cjk(cells) -> str:
+    """返回首个包含汉字的单元格（用于厂家格式中定位名称列）。"""
+    for c in cells:
+        s = (c or "").strip()
+        if s and any("\u4e00" <= ch <= "\u9fff" for ch in s):
+            return s
+    return ""
+
+
+def _csv_norm(text) -> str:
+    return str(text or "").strip().lower().replace(" ", "").replace("_", "")
+
+
+def _csv_parse_type(text) -> Optional[int]:
+    s = _csv_norm(text)
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    if s in _CSV_TYPE_TEXT:
+        return _CSV_TYPE_TEXT[s]
+    for key, tid in _CSV_TYPE_TEXT.items():
+        if key in s or s in key:
+            return tid
+    return None
+
+
+class ApiBridge:
     def __init__(self, root: Path, bus: Optional[EventBus] = None):
         self.root = root
         self.bus = bus or EventBus()
         self.store = ProjectStore()
-        self.master = Iec104Master(on_event=self._on_master_event)
+        self._masters: Dict[str, Iec104Master] = {}
         self._ui_push: Optional[Callable[[dict], None]] = None
         self._frames: List[dict] = []
         self._lock = threading.Lock()
         default_cfg = root / "configs" / "default.json"
+        if not default_cfg.exists() and getattr(sys, "frozen", False):
+            # 打包运行：exe 目录无配置时回退到包内默认（_MEIPASS），保存仍写 exe 目录
+            alt = Path(getattr(sys, "_MEIPASS", root)) / "configs" / "default.json"
+            if alt.exists():
+                default_cfg = alt
         if default_cfg.exists():
             try:
                 self.store.load(default_cfg)
             except Exception:
                 pass
+        self.store.config.ensure_sessions()
+        for s in self.store.config.sessions:
+            self._ensure_master(s.id)
 
     def set_ui_push(self, push: Callable[[dict], None]) -> None:
         self._ui_push = push
@@ -48,12 +108,24 @@ class ApiBridge:
         if event.get("type") == "frame":
             with self._lock:
                 self._frames.append(event)
-                if len(self._frames) > 500:
-                    self._frames = self._frames[-500:]
+                if len(self._frames) > 800:
+                    self._frames = self._frames[-800:]
         if event.get("type") == "points":
-            changed = self.store.update_values(event.get("objects") or [])
+            sid = str(event.get("session_id") or self.store.config.active_session_id)
+            changed = self.store.update_values(sid, event.get("objects") or [])
             event = {**event, "points": changed}
         self._push(event)
+
+    def _ensure_master(self, sid: str) -> Iec104Master:
+        if sid not in self._masters:
+            m = Iec104Master(on_event=self._on_master_event)
+            m.session_id = sid
+            self._masters[sid] = m
+        return self._masters[sid]
+
+    def _active_master(self) -> Iec104Master:
+        sid = self.store.config.active_session().id
+        return self._ensure_master(sid)
 
     # ---- exposed ----
 
@@ -64,11 +136,135 @@ class ApiBridge:
         return {str(k): v for k, v in TYPE_NAMES.items()}
 
     def get_project(self) -> dict:
-        return self.store.config.to_dict()
+        self.store.config.ensure_sessions()
+        data = self.store.config.to_dict()
+        # 附带连接状态
+        statuses = {}
+        for s in self.store.config.sessions:
+            m = self._masters.get(s.id)
+            statuses[s.id] = bool(m and m.connected)
+        data["session_connected"] = statuses
+        return data
+
+    def list_sessions(self) -> dict:
+        proj = self.get_project()
+        return {
+            "ok": True,
+            "sessions": proj["sessions"],
+            "active_session_id": proj["active_session_id"],
+            "session_connected": proj.get("session_connected", {}),
+        }
+
+    def create_session(self, data: Optional[dict] = None) -> dict:
+        data = data or {}
+        n = len(self.store.config.sessions) + 1
+        # 默认递增本地端口，降低多主站冲突
+        used_ports = {s.local_port for s in self.store.config.sessions if s.local_port}
+        local_port = int(data.get("local_port") or 0)
+        if not local_port:
+            candidate = 2404
+            while candidate in used_ports:
+                candidate += 1
+            local_port = candidate if data.get("auto_local_port", True) else 0
+        s = SessionDef(
+            id=uuid.uuid4().hex[:8],
+            name=str(data.get("name") or f"主站{n}"),
+            remote_ip=str(data.get("remote_ip") or "127.0.0.1"),
+            remote_port=int(data.get("remote_port") or 2404),
+            local_ip=str(data.get("local_ip") or ""),
+            local_port=local_port,
+            common_address=int(data.get("common_address") or 1),
+            originator=int(data.get("originator") or 0),
+        )
+        self.store.config.sessions.append(s)
+        # 新主站复制当前主站的点表作为初始模板（此后各自独立）
+        template = list(self.store.config.session_points(self.store.config.active_session_id))
+        self.store.config.set_session_points(s.id, template)
+        self.store.config.active_session_id = s.id
+        self.store.config._sync_legacy_from_active()
+        self._ensure_master(s.id)
+        return {"ok": True, "session": s.to_dict(), "project": self.get_project()}
+
+    def update_session(self, sid: str, data: dict) -> dict:
+        for s in self.store.config.sessions:
+            if s.id != sid:
+                continue
+            if "name" in data:
+                s.name = str(data["name"])
+            if "remote_ip" in data:
+                s.remote_ip = str(data["remote_ip"])
+            if "remote_port" in data:
+                s.remote_port = int(data["remote_port"])
+            if "local_ip" in data:
+                s.local_ip = str(data["local_ip"])
+            if "local_port" in data:
+                s.local_port = int(data["local_port"] or 0)
+            if "common_address" in data:
+                s.common_address = int(data["common_address"])
+            if "originator" in data:
+                s.originator = int(data["originator"])
+            # 104 参数
+            for key, conv in {
+                "t0": float, "t1": float, "t2": float, "t3": float,
+                "link_ack_timeout": float, "cmd_timeout": float, "tx_delay_ms": float,
+                "gi_period": int, "clock_period": int, "call_period": int,
+                "cot_size": int, "ca_size": int, "ioa_size": int, "read_cot": int,
+            }.items():
+                if key in data:
+                    setattr(s, key, conv(data[key]))
+            if "k" in data:
+                s.k = int(data["k"])
+            if "w" in data:
+                s.w = int(data["w"])
+            if "auto_reconnect" in data:
+                s.auto_reconnect = bool(data["auto_reconnect"])
+            if "setpoint_batch" in data:
+                s.setpoint_batch = max(1, min(int(data["setpoint_batch"] or 10), 127))
+            if self.store.config.active_session_id == sid:
+                self.store.config._sync_legacy_from_active()
+            return {"ok": True, "session": s.to_dict(), "project": self.get_project()}
+        return {"ok": False, "error": f"会话不存在: {sid}"}
+
+    def delete_session(self, sid: str) -> dict:
+        if len(self.store.config.sessions) <= 1:
+            return {"ok": False, "error": "至少保留一个主站会话"}
+        m = self._masters.pop(sid, None)
+        if m:
+            try:
+                m.disconnect()
+            except Exception:
+                pass
+        self.store.config.sessions = [s for s in self.store.config.sessions if s.id != sid]
+        self.store.config.ensure_sessions()
+        return {"ok": True, "project": self.get_project()}
+
+    def set_active_session(self, sid: str) -> dict:
+        if not any(s.id == sid for s in self.store.config.sessions):
+            return {"ok": False, "error": f"会话不存在: {sid}"}
+        self.store.config.active_session_id = sid
+        self.store.config._sync_legacy_from_active()
+        return {"ok": True, "project": self.get_project()}
 
     def save_project(self, data: dict, path: str = "") -> dict:
         try:
-            self.store.config = self.store.config.from_dict(data)
+            # 允许带 sessions 的完整工程，也兼容旧扁平字段写回 active
+            if data.get("sessions"):
+                self.store.config = self.store.config.from_dict({**self.store.config.to_dict(), **data})
+            else:
+                sid = self.store.config.active_session_id
+                self.update_session(
+                    sid,
+                    {
+                        "remote_ip": data.get("remote_ip"),
+                        "remote_port": data.get("remote_port"),
+                        "local_ip": data.get("local_ip"),
+                        "local_port": data.get("local_port"),
+                        "common_address": data.get("common_address"),
+                        "originator": data.get("originator"),
+                    },
+                )
+                if "points" in data:
+                    self.store.config.points = [PointDef(**p) for p in data["points"]]
             target = Path(path) if path else (self.store.path or (self.root / "configs" / "default.json"))
             self.store.save(target)
             return {"ok": True, "path": str(target)}
@@ -77,80 +273,427 @@ class ApiBridge:
 
     def load_project(self, path: str) -> dict:
         try:
+            for m in list(self._masters.values()):
+                try:
+                    m.disconnect()
+                except Exception:
+                    pass
+            self._masters.clear()
             cfg = self.store.load(Path(path))
-            return {"ok": True, "project": cfg.to_dict()}
+            for s in cfg.sessions:
+                self._ensure_master(s.id)
+            return {"ok": True, "project": self.get_project()}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def upsert_point(self, point: dict) -> dict:
+    def upsert_point(self, point: dict, sid: Optional[str] = None) -> dict:
+        sid = sid or self.store.config.active_session_id
+        tid = int(point.get("type_id") or 0)
         p = PointDef(
             ioa=int(point["ioa"]),
-            type_id=int(point.get("type_id") or 0),
+            type_id=tid,
             name=str(point.get("name") or ""),
-            category=str(point.get("category") or ""),
+            category=str(point.get("category") or "") or category_for_type(tid),
             value=point.get("value"),
             quality=int(point.get("quality") or 0),
         )
-        self.store.upsert_point(p)
-        return {"ok": True, "project": self.store.config.to_dict()}
+        self.store.upsert_point(sid, p)
+        return {"ok": True, "project": self.get_project()}
 
-    def remove_point(self, ioa: int) -> dict:
-        ok = self.store.remove_point(int(ioa))
-        return {"ok": ok, "project": self.store.config.to_dict()}
+    def remove_point(self, ioa: int, sid: Optional[str] = None) -> dict:
+        sid = sid or self.store.config.active_session_id
+        ok = self.store.remove_point(sid, int(ioa))
+        return {"ok": ok, "project": self.get_project()}
 
-    def connect(self, params: dict) -> dict:
+    # ---- CSV 发码表导入 ----
+
+    def import_points_csv(self, path: str, sid: Optional[str] = None) -> dict:
+        """从 CSV 发码表导入点（默认导入到指定/当前主站，按 IOA 去重）。
+
+        支持:
+        - 中文/英文表头标准格式: 信息体地址(IOA)/点号, 名称, 类型, 类别...
+        - 无表头默认列序 [IOA, 名称, 类型]
+        - 厂家格式(WLD2660 等): 首行文件头 0,型号,IEC104,版本; 首列分组 1=遥信/2=遥测/5=遥控/7=遥调
+        编码自动兼容 UTF-8 / GBK / GB18030 等。
+        """
+        import csv
+        import io
+
         try:
-            # 同步到工程配置
-            c = self.store.config
-            c.remote_ip = str(params.get("remote_ip") or c.remote_ip)
-            c.remote_port = int(params.get("remote_port") or c.remote_port)
-            c.local_ip = str(params.get("local_ip") or "")
-            c.local_port = int(params.get("local_port") or 0)
-            c.common_address = int(params.get("common_address") or c.common_address)
-            c.originator = int(params.get("originator") or 0)
+            p = Path(path)
+            if not p.exists():
+                return {"ok": False, "error": f"文件不存在：{path}"}
+            sid = sid or self.store.config.active_session_id
+            text = None
+            last_err = None
+            for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030", "gb2312", "big5"):
+                try:
+                    text = p.read_bytes().decode(enc)
+                    break
+                except (UnicodeDecodeError, LookupError) as e:
+                    last_err = e
+            if text is None:
+                return {"ok": False, "error": f"无法识别文件编码：{last_err}"}
 
+            rows = [r for r in csv.reader(io.StringIO(text)) if any((c or "").strip() for c in r)]
+            if not rows:
+                return {"ok": False, "error": "CSV 文件为空"}
+
+            alias_rev = {}
+            for key, names in _CSV_COLUMN_ALIASES.items():
+                for nm in names:
+                    alias_rev[_csv_norm(nm)] = key
+            header = [_csv_norm(c) for c in rows[0]]
+            has_header = any(h in alias_rev for h in header)
+            col_map: dict = {}
+            if has_header:
+                for i, h in enumerate(header):
+                    key = alias_rev.get(h)
+                    if key and key not in col_map:
+                        col_map[key] = i
+                if "ioa" not in col_map:
+                    return {"ok": False, "error": "CSV 缺少“信息体地址(IOA)”列"}
+                data_rows = rows[1:]
+                start_line = 2
+                mode = "header"
+            else:
+                # 厂家发码表: 首行首列 0(文件头), 或首列是分组 1/2/5/7 且第 2 列为数字
+                first = rows[0] if rows else []
+                vendor = bool(
+                    rows and first
+                    and (
+                        first[0].strip() == "0"
+                        or (
+                            first[0].strip() in _VENDOR_GROUPS
+                            and len(first) > 1
+                            and first[1].strip().isdigit()
+                        )
+                    )
+                )
+                if vendor:
+                    skip_head = first[0].strip() == "0"
+                    data_rows = rows[1:] if skip_head else rows
+                    start_line = 2 if skip_head else 1
+                    mode = "vendor"
+                else:
+                    data_rows = rows
+                    start_line = 1
+                    mode = "plain"
+
+            count = 0
+            skipped = []
+            for i, row in enumerate(data_rows, start=start_line):
+                if mode == "header":
+
+                    def cell(key: str) -> str:
+                        idx = col_map.get(key)
+                        return (row[idx] if idx is not None and idx < len(row) else "").strip()
+
+                    ioa_s = cell("ioa")
+                    name_s = cell("name")
+                    type_s = cell("type_id")
+                    cat_s = cell("category")
+                    val_s = cell("value")
+                    q_s = cell("quality")
+                elif mode == "vendor":
+                    grp = (row[0] if row else "").strip()
+                    info = _VENDOR_GROUPS.get(grp)
+                    if not info:
+                        skipped.append(f"第{i}行：未知分组“{grp}”，已跳过")
+                        continue
+                    ioa_s = (row[1] if len(row) > 1 else "").strip()
+                    name_s = _first_cjk(row[2:]) or (row[-1].strip() if row and row[-1].strip() else "")
+                    type_s = str(info[1])
+                    cat_s = info[0]
+                    val_s = ""
+                    q_s = ""
+                else:  # plain: 无表头默认 [IOA, 名称, 类型]
+                    ioa_s = (row[0] if len(row) > 0 else "").strip()
+                    name_s = (row[1] if len(row) > 1 else "").strip()
+                    type_s = (row[2] if len(row) > 2 else "").strip()
+                    cat_s = ""
+                    val_s = ""
+                    q_s = ""
+
+                if not ioa_s.isdigit():
+                    skipped.append(f"第{i}行：IOA 无效“{ioa_s}”")
+                    continue
+                tid = _csv_parse_type(type_s) or 0
+                cat = cat_s or category_for_type(tid)
+                if cat not in ("遥信", "遥测", "遥控", "遥调"):
+                    cat = category_for_type(tid)
+                self.store.upsert_point(
+                    sid,
+                    PointDef(
+                        ioa=int(ioa_s),
+                        type_id=tid,
+                        name=name_s or f"IOA-{int(ioa_s)}",
+                        category=cat,
+                        value=val_s if val_s != "" else None,
+                        quality=int(q_s) if q_s.isdigit() else 0,
+                    ),
+                )
+                count += 1
+            # 源点表(发码表)无类型列时，按 IOA 分段补全类型/类别
+            self.fill_missing_point_types(sid)
+            return {
+                "ok": True,
+                "count": count,
+                "skipped": len(skipped),
+                "errors": skipped,
+                "project": self.get_project(),
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def connect(self, params: Optional[dict] = None) -> dict:
+        """连接当前活动会话；params 若给出则先写回该会话。"""
+        try:
+            s = self.store.config.active_session()
+            if params:
+                self.update_session(s.id, params)
+                s = self.store.config.active_session()
+            # 多会话本地端口冲突检查
+            if s.local_port:
+                for other in self.store.config.sessions:
+                    if other.id == s.id or not other.local_port:
+                        continue
+                    om = self._masters.get(other.id)
+                    if om and om.connected and other.local_ip == s.local_ip and other.local_port == s.local_port:
+                        return {
+                            "ok": False,
+                            "code": "LOCAL_PORT_CONFLICT",
+                            "error": f"本地 {s.local_ip or '*'}:{s.local_port} 已被会话「{other.name}」占用",
+                        }
             cp = ConnectParams(
-                remote_ip=c.remote_ip,
-                remote_port=c.remote_port,
-                local_ip=c.local_ip,
-                local_port=c.local_port,
-                common_address=c.common_address,
-                originator=c.originator,
+                remote_ip=s.remote_ip,
+                remote_port=s.remote_port,
+                local_ip=s.local_ip,
+                local_port=s.local_port,
+                common_address=s.common_address,
+                originator=s.originator,
+                t0=float(getattr(s, "t0", 30.0) or 30.0),
+                t1=float(getattr(s, "t1", 15.0) or 15.0),
+                t2=float(getattr(s, "t2", 10.0) or 10.0),
+                t3=float(getattr(s, "t3", 20.0) or 20.0),
+                k=int(getattr(s, "k", 12) or 12),
+                w=int(getattr(s, "w", 8) or 8),
+                gi_period=int(getattr(s, "gi_period", 600) or 0),
+                clock_period=int(getattr(s, "clock_period", 30) or 0),
+                call_period=int(getattr(s, "call_period", 0) or 0),
+                link_ack_timeout=float(getattr(s, "link_ack_timeout", 10.0) or 10.0),
+                cmd_timeout=float(getattr(s, "cmd_timeout", 30.0) or 30.0),
+                cot_size=int(getattr(s, "cot_size", 2) or 2),
+                ca_size=int(getattr(s, "ca_size", 2) or 2),
+                ioa_size=int(getattr(s, "ioa_size", 3) or 3),
+                read_cot=int(getattr(s, "read_cot", 5) or 5),
+                auto_reconnect=bool(getattr(s, "auto_reconnect", True)),
+                tx_delay_ms=float(getattr(s, "tx_delay_ms", 0.0) or 0.0),
             )
-            self.master.connect(cp)
-            return {"ok": True, "message": "连接成功"}
+            self._ensure_master(s.id).connect(cp)
+            return {"ok": True, "message": "连接成功", "session_id": s.id}
         except MasterError as e:
             return {"ok": False, "code": e.code, "error": e.message}
         except Exception as e:
             return {"ok": False, "code": "UNEXPECTED", "error": str(e), "detail": traceback.format_exc()}
 
-    def disconnect(self) -> dict:
+    def disconnect(self, sid: str = "") -> dict:
         try:
-            self.master.disconnect()
-            return {"ok": True}
+            sid = sid or self.store.config.active_session().id
+            m = self._masters.get(sid)
+            if m:
+                m.disconnect()
+            return {"ok": True, "session_id": sid}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def is_connected(self) -> bool:
-        return bool(self.master.connected)
+    def disconnect_all(self) -> dict:
+        for m in self._masters.values():
+            try:
+                m.disconnect()
+            except Exception:
+                pass
+        return {"ok": True}
+
+    def is_connected(self, sid: str = "") -> bool:
+        sid = sid or self.store.config.active_session().id
+        m = self._masters.get(sid)
+        return bool(m and m.connected)
 
     def general_interrogation(self) -> dict:
-        return self._cmd(lambda: self.master.general_interrogation())
+        return self._cmd(lambda: self._active_master().general_interrogation())
 
     def clock_sync(self) -> dict:
-        return self._cmd(lambda: self.master.clock_sync())
+        return self._cmd(lambda: self._active_master().clock_sync())
 
     def single_command(self, ioa: int, on: bool, select: bool) -> dict:
-        return self._cmd(lambda: self.master.single_command(int(ioa), bool(on), bool(select)))
+        return self._cmd_confirm(
+            lambda m: m.single_command(int(ioa), bool(on), bool(select)),
+            type_ids=(45,), cots=(7, 10),
+            ok_text="遥控选择成功" if select else "遥控执行成功",
+        )
 
     def double_command(self, ioa: int, state: int, select: bool) -> dict:
-        return self._cmd(lambda: self.master.double_command(int(ioa), int(state), bool(select)))
+        return self._cmd_confirm(
+            lambda m: m.double_command(int(ioa), int(state), bool(select)),
+            type_ids=(46,), cots=(7, 10),
+            ok_text="遥控选择成功" if select else "遥控执行成功",
+        )
 
     def setpoint_float(self, ioa: int, value: float, select: bool) -> dict:
-        return self._cmd(lambda: self.master.setpoint_float(int(ioa), float(value), bool(select)))
+        return self._cmd(lambda: self._active_master().setpoint_float(int(ioa), float(value), bool(select)))
 
     def setpoint_normalized(self, ioa: int, value: float, select: bool) -> dict:
-        return self._cmd(lambda: self.master.setpoint_normalized(int(ioa), float(value), bool(select)))
+        return self._cmd(lambda: self._active_master().setpoint_normalized(int(ioa), float(value), bool(select)))
+
+    def read_points(self, ioas: list, area: int = 1, batch: Optional[int] = None) -> dict:
+        """定值召唤（支持单选/多选 IOA）：广西/南网用 108(C_RS_NA_1)，国网用 202(区号(2B)+IOA)。
+        batch=单帧定值个数，多选时按批发送，每批等从站回执后再发下一批（后台线程）。"""
+        try:
+            ids = [int(i) for i in ioas]
+            if not ids:
+                return {"ok": False, "error": "未选择定值点"}
+            tid = 202 if self.store.config.protocol_variant == "国网" else 108
+            batch = max(1, min(int(batch or 10), 127))
+            m = self._active_master()
+            timeout = float(getattr(getattr(m, "_params", None), "cmd_timeout", 30.0) or 30.0)
+
+            def _run():
+                try:
+                    before = m.i_frame_count()
+                    for k in range(0, len(ids), batch):
+                        m.read_setpoints_batch(ids[k:k + batch], tid=tid, area=area)
+                        m.wait_i_frame(before, timeout)
+                        before = m.i_frame_count()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_run, daemon=True).start()
+            return {"ok": True, "count": len(ids), "batch": batch}
+        except MasterError as e:
+            return {"ok": False, "code": e.code, "error": e.message}
+        except Exception as e:
+            return {"ok": False, "code": "UNEXPECTED", "error": str(e)}
+
+    @staticmethod
+    def _guess_type_for_ioa(ioa: int) -> int:
+        """按 IOA 分段推断缺失类型：≥6001H 遥控(45)、≥5001H 遥调(50)、≥4001H 遥测(13)、其他 遥信(1)。"""
+        if ioa >= 0x6001:
+            return 45
+        if ioa >= 0x5001:
+            return 50
+        if ioa >= 0x4001:
+            return 13
+        return 1
+
+    def fill_missing_point_types(self, sid: Optional[str] = None) -> dict:
+        """点表缺类型的点按 IOA 分段填入类型/类别（国网发码表常无类型列），返回补充数量。"""
+        try:
+            sid = sid or self.store.config.active_session_id
+            filled = 0
+            for p in self.store.config.session_points(sid):
+                if p.type_id or p.category:
+                    continue
+                p.type_id = self._guess_type_for_ioa(p.ioa)
+                p.category = category_for_type(p.type_id)
+                self.store.upsert_point(sid, p)
+                filled += 1
+            return {"ok": True, "filled": filled}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def read_all_setpoints(self, sid: Optional[str] = None, area: int = 1, batch: Optional[int] = None) -> dict:
+        """参数全召唤：点表中全部遥调(定值)点按单帧个数分批发送；每批等从站回执后再发下一批（后台线程）。"""
+        try:
+            sid = sid or self.store.config.active_session_id
+            self.fill_missing_point_types(sid)
+            ids = [p.ioa for p in self.store.config.session_points(sid) if p.category == "遥调"]
+            if not ids:
+                return {"ok": False, "error": "点表中没有遥调(定值)点"}
+            tid = 202 if self.store.config.protocol_variant == "国网" else 108
+            sess = next((s for s in self.store.config.sessions if s.id == sid), None)
+            batch = max(1, min(int(batch if batch else (getattr(sess, "setpoint_batch", 10) or 10)), 127))
+            m = self._active_master()
+            timeout = float(getattr(getattr(m, "_params", None), "cmd_timeout", 30.0) or 30.0)
+
+            def _run():
+                try:
+                    before = m.i_frame_count()
+                    for k in range(0, len(ids), batch):
+                        m.read_setpoints_batch(ids[k:k + batch], tid=tid, area=area)
+                        m.wait_i_frame(before, timeout)
+                        before = m.i_frame_count()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_run, daemon=True).start()
+            return {"ok": True, "count": len(ids), "batch": batch}
+        except MasterError as e:
+            return {"ok": False, "code": e.code, "error": e.message}
+        except Exception as e:
+            return {"ok": False, "code": "UNEXPECTED", "error": str(e)}
+
+    def set_protocol_variant(self, variant: str) -> dict:
+        """设置规约/细则版本（广西/南网/国网），影响四遥功能适配。"""
+        if variant not in ("广西", "南网", "国网"):
+            return {"ok": False, "error": f"不支持的规约版本: {variant}"}
+        self.store.config.protocol_variant = variant
+        return {"ok": True, "project": self.get_project()}
+
+    def cancel_command(self, ioa: int, kind: str) -> dict:
+        """遥控撤销（COT=8 去激活：sc/dc），等停止激活确认后弹窗结果。"""
+        tid = 46 if kind == "dc" else 45
+
+        def fn(m):
+            if kind == "dc":
+                m.double_command(int(ioa), 1, False, cancel=True)
+            else:
+                m.single_command(int(ioa), True, False, cancel=True)
+
+        return self._cmd_confirm(fn, type_ids=(tid,), cots=(9, 7), ok_text="遥控撤销成功")
+
+    def preset_setpoint(self, ioa: int, value: float, select: bool, area: int = 1) -> dict:
+        """定值整定：预置(S/E=1) / 固化(S/E=0)；等从站确认后弹窗结果。
+        广西/南网用 55(C_SP_NA_1)，国网用 203(C_WS_NA_1，细则7.9.4)。"""
+        tid = 203 if self.store.config.protocol_variant == "国网" else 55
+        if select:
+            cots = (7,)  # 预置：激活确认
+            ok_text = "预置成功"
+        else:
+            cots = (7,)  # 固化：激活(6) → 激活确认(7)
+            ok_text = "固化(激活)成功"
+        return self._cmd_confirm(
+            lambda m: m.preset_param(int(ioa), float(value), bool(select), tid=tid, area=int(area)),
+            type_ids=(tid,), cots=cots,
+            ok_text=ok_text,
+        )
+
+    def fix_setpoint(self, area: int = 1) -> dict:
+        """国网定值固化：无需选中点/值——203 VSQ=0 + 区号(2B) + PI=00(S/E=0)，COT=6。
+        固化成功后由 UI 将“修改值”提交为点表“值”。"""
+        return self._cmd_confirm(
+            lambda m: m.preset_param(0, 0.0, select=False, tid=203, area=int(area)),
+            type_ids=(203,), cots=(7,),
+            ok_text="固化(激活)成功（已更新点表值）",
+            commit_modvals=True,
+        )
+
+    def cancel_setpoint(self, ioa: int, kind: str = "", area: int = 1) -> dict:
+        """定值整定撤销(COT=8)：等停止激活确认后弹窗结果。"""
+        tid = 203 if self.store.config.protocol_variant == "国网" else 55
+        return self._cmd_confirm(
+            lambda m: m.preset_param(int(ioa), 0.0, select=False, cancel=True, tid=tid, area=int(area)),
+            type_ids=(tid,), cots=(9, 7),
+            ok_text="撤销成功",
+        )
+
+    def read_setting_area(self) -> dict:
+        """读定值区号(C_RR_NA_1=201，国网)。"""
+        return self._cmd(lambda: self._active_master().read_setting_area())
+
+    def switch_setting_area(self, area: int) -> dict:
+        """切换定值区(C_SR_NA_1=200，国网)。"""
+        return self._cmd(lambda: self._active_master().switch_setting_area(int(area)))
 
     def get_frames(self, limit: int = 100) -> list:
         with self._lock:
@@ -170,5 +713,44 @@ class ApiBridge:
         except Exception as e:
             return {"ok": False, "code": "UNEXPECTED", "error": str(e)}
 
+    def _cmd_confirm(self, send_fn, type_ids: tuple, cots: tuple, ok_text: str,
+                     commit_modvals: bool = False) -> dict:
+        """发送命令并在后台等待从站确认帧，完成后推送 cmd_result 事件（UI 弹窗）。"""
+        try:
+            m = self._active_master()
+            before = m.i_frame_count()
+        except MasterError as e:
+            return {"ok": False, "code": e.code, "error": e.message}
+        except Exception as e:
+            return {"ok": False, "code": "UNEXPECTED", "error": str(e)}
 
-# [AGENT_CHANGE_END] 2026-09-07 104-MVP服务桥
+        def _run():
+            try:
+                send_fn(m)
+            except MasterError as e:
+                self._push({"type": "cmd_result", "ok": False, "text": f"发送失败：{e.message}"})
+                return
+            except Exception as e:
+                self._push({"type": "cmd_result", "ok": False, "text": f"发送失败：{e}"})
+                return
+            timeout = float(getattr(getattr(m, "_params", None), "cmd_timeout", 30.0) or 30.0)
+            r = m.wait_cmd_result(set(type_ids), set(cots), before, timeout)
+            if r is None:
+                self._push({
+                    "type": "cmd_result", "ok": False,
+                    "text": "等待从站确认超时（未收到对应回复）",
+                })
+            elif not r.get("pos", True):
+                self._push({
+                    "type": "cmd_result", "ok": False,
+                    "text": "从站返回否定确认：命令被拒绝（传送原因 %s）" % r.get("cot"),
+                })
+            else:
+                self._push({"type": "cmd_result", "ok": True, "text": ok_text,
+                            "commit_modvals": commit_modvals})
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True}
+
+
+# [AGENT_CHANGE_END] 2026-09-07 多主站API桥
