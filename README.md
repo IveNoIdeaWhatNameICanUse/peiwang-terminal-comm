@@ -40,6 +40,14 @@ python scripts/install_offline_wheels.py
 python -m pip install --no-index --find-links=offline_wheels --no-build-isolation pywebview
 `
 
+## 打包 exe
+
+`ash
+python scripts/build_exe.py
+`
+
+产物：dist/配网终端通讯/配网终端通讯.exe（需连同目录内 dll/资源一起发布，不要只拷 exe）。
+
 ## 目录
 
 - `app/` 入口与桌面壳
