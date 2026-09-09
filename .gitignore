@@ -18,3 +18,11 @@ vendor/
 *.msi
 .DS_Store
 Thumbs.db
+
+# 临时调试产物
+*.png
+*-*.txt
+_search_types.py
+/default.json
+/auto*.png
+/reconnect*.png
