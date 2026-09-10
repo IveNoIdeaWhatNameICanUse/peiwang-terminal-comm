@@ -304,11 +304,20 @@ class Iec101Master:
             if not self._connected:
                 continue
             try:
+                before = self._last_rx
                 if self._acd:
                     self._acd = False
                     self._request_level(1)
                 elif p.poll_level2:
                     self._request_level(2)
+                else:
+                    continue
+                # 非平衡：一次只发一帧，等从站应答（最多 min(轮询周期, 1s)）再发下一帧
+                end = time.time() + max(0.2, min(1.0, float(p.poll_period)))
+                while not self._stop.is_set() and time.time() < end:
+                    if self._last_rx > before:
+                        break
+                    time.sleep(0.01)
             except Iec101Error:
                 pass
 
@@ -365,6 +374,8 @@ class Iec101Master:
     def _handle_frame(self, frame: bytes) -> None:
         info = link.parse_frame(frame, self._params.addr_size if self._params else 1)
         kind = info["kind"]
+        cs_ok = bool(info.get("cs_ok", True))
+        cs_note = "" if cs_ok else " ［校验和错误］"
         if kind == "single":
             # 单字符 E5：从站对“复位链路”的确认
             self._ack_ok = True
@@ -389,7 +400,8 @@ class Iec101Master:
                     self._fcb = False
                     self._reply_fixed(link.FC_ACK, "确认(ACK)", is_bal_frame)
                 self._emit({"type": "frame", "direction": "RX", "hex": codec104.hex_dump(frame),
-                            "note": f"从站发起:{pname}" + ("（ACD=1）" if acd else ""), "ts": time.time()})
+                            "note": f"从站发起:{pname}" + ("（ACD=1）" if acd else "") + cs_note,
+                            "ts": time.time()})
                 return
             if fc in (link.FC_ACK, link.FC_LINK_BUSY):
                 # 链路忙也是有效响应（现场从站用 0x0B 回应请求链路状态）
@@ -403,7 +415,7 @@ class Iec101Master:
             names = {0: "确认(ACK)", 1: "否认(NACK)", 8: "用户数据", 9: "无所召唤数据", 11: "链路忙"}
             note = names.get(fc, f"固定帧 FC={fc}")
             self._emit({"type": "frame", "direction": "RX", "hex": codec104.hex_dump(frame),
-                        "note": note + ("（ACD=1 请求访问）" if acd else ""), "ts": time.time()})
+                        "note": note + ("（ACD=1 请求访问）" if acd else "") + cs_note, "ts": time.time()})
             return
         # variable
         asdu_raw = info["asdu"]
@@ -433,7 +445,7 @@ class Iec101Master:
                 parsed = None
         self._emit({
             "type": "frame", "direction": "RX",
-            "hex": codec104.hex_dump(frame), "note": note, "ts": time.time(),
+            "hex": codec104.hex_dump(frame), "note": note + cs_note, "ts": time.time(),
             "asdu": None if not parsed else {
                 "type_id": parsed.type_id, "type_name": parsed.type_name,
                 "cot": parsed.cot, "ca": parsed.ca,

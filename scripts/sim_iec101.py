@@ -314,6 +314,14 @@ def run(unbalanced: bool):
     check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
           "frame format: user-data control byte = 0x73/0x53 (no DIR)",
           str([h[:23] for h in raw if h.startswith("68")][:2]))
+    # FT1.2 校验和：从第一个长度字节起算（不含前导 0x68、CS 与 0x16）
+    var = [f for f in sim.rx_frames if f and f[0] == 0x68]
+    bad_cs = [f.hex(" ").upper() for f in var if f[-2] != (sum(f[1:-2]) & 0xFF)]
+    check(bool(var) and not bad_cs, "variable frame checksum = sum(L,L,68,C,A,ASDU) mod 256",
+          str(bad_cs[:1]))
+    fixed = [f for f in sim.rx_frames if f and f[0] == 0x10]
+    bad_fcs = [f.hex(" ").upper() for f in fixed if f[-2] != (sum(f[1:-2]) & 0xFF)]
+    check(not bad_fcs, "fixed frame checksum = sum(C,A) mod 256", str(bad_fcs[:1]))
     print("  frames: TX=%d RX=%d, slave got %d ASDUs" % (len(tx), len(rx), len(sim.rx_asdus)))
     for a in sim.rx_asdus:
         print("    slave RX: %s COT=%s" % (a.type_name, a.cot))

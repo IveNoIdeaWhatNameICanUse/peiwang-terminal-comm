@@ -80,12 +80,17 @@ def build_single() -> bytes:
 
 
 def build_variable(ctrl: int, addr: int, asdu: bytes, addr_size: int = 1) -> bytes:
-    """Variable frame: 68H | L | L | 68H | C | A | ASDU | CS | 16H."""
+    """Variable frame: 68H | L | L | 68H | C | A | ASDU | CS | 16H.
+
+    CS = 字节和(模 256)，从**第一个长度字节**起算到 ASDU 末尾，
+    不含前导 68H、不含 CS 本身与结束 16H（DL/T 634.5101 / IEC 60870-5-2）。
+    固定帧的校验同样是“控制+地址”之和，不含起始 10H。
+    """
     a = int(addr).to_bytes(addr_size, "little")
     payload = bytes([ctrl]) + a + asdu
     length = len(payload)
     body = bytes([START_VAR, length, length, START_VAR]) + payload
-    return body + bytes([_cs(body), END_BYTE])
+    return body + bytes([_cs(body[1:]), END_BYTE])
 
 
 def feed(buf: bytearray, data: bytes, addr_size: int = 1):
@@ -129,15 +134,18 @@ def feed(buf: bytearray, data: bytes, addr_size: int = 1):
 
 
 def parse_frame(frame: bytes, addr_size: int = 1) -> dict:
-    """Parse one FT1.2 frame -> {kind, ctrl, fc, addr, asdu}."""
+    """Parse one FT1.2 frame -> {kind, ctrl, fc, addr, asdu, cs_ok}."""
     if frame == bytes([SINGLE_CHAR]):
-        return {"kind": "single", "ctrl": 0, "fc": -1, "addr": 0, "asdu": b""}
+        return {"kind": "single", "ctrl": 0, "fc": -1, "addr": 0, "asdu": b"", "cs_ok": True}
+    cs_ok = len(frame) >= 2 and frame[-2] == _cs(frame[1:-2])
     if frame[0] == START_FIXED:
         c = frame[1]
         addr = int.from_bytes(frame[2:2 + addr_size], "little")
-        return {"kind": "fixed", "ctrl": c, "addr": addr, "asdu": b"", **parse_ctrl(c)}
+        return {"kind": "fixed", "ctrl": c, "addr": addr, "asdu": b"", "cs_ok": cs_ok,
+                **parse_ctrl(c)}
     # variable
     c = frame[4]
     addr = int.from_bytes(frame[5:5 + addr_size], "little")
     asdu = frame[5 + addr_size:-2]
-    return {"kind": "variable", "ctrl": c, "addr": addr, "asdu": asdu, **parse_ctrl(c)}
+    return {"kind": "variable", "ctrl": c, "addr": addr, "asdu": asdu, "cs_ok": cs_ok,
+            **parse_ctrl(c)}
