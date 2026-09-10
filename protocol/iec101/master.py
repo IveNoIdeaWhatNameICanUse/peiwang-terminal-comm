@@ -57,6 +57,7 @@ class Iec101Master:
         self._params: Optional[SerialParams] = None
         self._rx_thread: Optional[threading.Thread] = None
         self._poll_thread: Optional[threading.Thread] = None
+        self._init_thread: Optional[threading.Thread] = None
         self._buf = bytearray()
         self._fcb = False              # 主站发送帧计数位(翻转)
         self._i_frames = 0
@@ -141,17 +142,16 @@ class Iec101Master:
         })
         self._rx_thread = threading.Thread(target=self._rx_loop, name="iec101-rx", daemon=True)
         self._rx_thread.start()
-        # 链路初始化：复位链路 → 请求链路状态
-        try:
-            self._reset_link()
-        except Iec101Error:
-            pass
+        # 链路初始化（复位/请求链路状态）放后台线程，避免阻塞界面
+        self._init_thread = threading.Thread(target=self._init_link, name="iec101-init", daemon=True)
+        self._init_thread.start()
         if not p.balanced:
+            # 轮询不等待链路初始化：连接后立即按周期召唤，便于现场尽快看到报文
             self._poll_thread = threading.Thread(target=self._poll_loop, name="iec101-poll", daemon=True)
             self._poll_thread.start()
-            self._log("101 非平衡链路初始化完成，开始周期轮询（召唤 2 级数据）")
+            self._log(f"101 非平衡方式：开始周期轮询召唤 2 级数据（周期 {p.poll_period:g}s）")
         else:
-            self._log("101 平衡链路初始化完成（双方可发起传输）")
+            self._log("101 平衡方式：双方可发起传输（日志上送取决于从站）")
 
     def disconnect(self) -> None:
         was = self._connected
@@ -168,6 +168,7 @@ class Iec101Master:
             self._rx_thread.join(timeout=1.5)
         self._rx_thread = None
         self._poll_thread = None
+        self._init_thread = None
         if was:
             self._emit({
                 "type": "connection",
@@ -216,20 +217,41 @@ class Iec101Master:
         ok = self._ack_event.wait(timeout or self._params.resp_timeout)
         return ok and self._ack_ok
 
-    def _reset_link(self) -> None:
-        """复位链路(FC=0) 并请求链路状态(FC=9)。"""
+    def _reset_link(self, ack_timeout: Optional[float] = None) -> bool:
+        """复位链路(FC=0) 并请求链路状态(FC=9)；返回是否收到从站确认。"""
         assert self._params
         p = self._params
+        t = float(ack_timeout or min(float(p.resp_timeout or 1.5), 1.5))
         if p.balanced:
             ctrl = link.ctrl_balanced(link.FC_RESET_LINK, True, self._next_fcb(), True)
         else:
             ctrl = link.ctrl_primary(link.FC_RESET_LINK, self._next_fcb(), True)
         self._send_fixed(ctrl, "复位链路(FC=0)")
-        self._wait_ack()
+        ok1 = self._wait_ack(t)
+        if not self._connected:
+            return False
         ctrl = link.ctrl_balanced(link.FC_REQ_LINK_STATUS, True, False, False) if p.balanced \
             else link.ctrl_primary(link.FC_REQ_LINK_STATUS, False, False)
         self._send_fixed(ctrl, "请求链路状态(FC=9)")
-        self._wait_ack()
+        ok2 = self._wait_ack(t)
+        return bool(ok1 and ok2)
+
+    def _init_link(self) -> None:
+        """后台链路初始化：复位链路 → 请求链路状态（不阻塞界面与轮询）。"""
+        assert self._params
+        p = self._params
+        # 链路层确认等待时间不宜过长：帧交互通常在百毫秒内完成
+        ack_timeout = max(0.6, min(float(p.resp_timeout or 1.5), 1.5))
+        try:
+            ok = self._reset_link(ack_timeout)
+        except Iec101Error:
+            return
+        if not self._connected:
+            return
+        if ok:
+            self._log("101 链路初始化完成（从站已确认复位/链路状态）")
+        else:
+            self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
 
     def _request_level(self, level: int) -> None:
         """非平衡：召唤 1/2 级数据。"""
@@ -266,7 +288,18 @@ class Iec101Master:
             note = note or "用户数据(FC=3)"
         frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size)
         self._send(frame, note)
-        self._wait_ack()
+        self._await_link_ack(note)
+
+    def _await_link_ack(self, note: str) -> None:
+        """后台等待链路层确认，超时只记日志（不阻塞界面线程）。"""
+        assert self._params
+        t = max(0.6, min(float(self._params.resp_timeout or 1.5), 1.5))
+
+        def _wait() -> None:
+            if self._connected and not self._wait_ack(t):
+                self._log(f"{note}：未收到从站链路确认（继续等待数据帧）")
+
+        threading.Thread(target=_wait, name="iec101-ack", daemon=True).start()
 
     # ---------- RX ----------
     def _rx_loop(self) -> None:
@@ -295,6 +328,9 @@ class Iec101Master:
         info = link.parse_frame(frame, self._params.addr_size if self._params else 1)
         kind = info["kind"]
         if kind == "single":
+            # 单字符 E5：从站对“复位链路”的确认
+            self._ack_ok = True
+            self._ack_event.set()
             self._emit({"type": "frame", "direction": "RX", "hex": "E5",
                         "note": "单字符确认(E5)", "ts": time.time()})
             return

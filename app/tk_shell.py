@@ -396,6 +396,10 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         ttk.Checkbutton(dlg, text="平衡方式（不勾选=非平衡周期轮询）", variable=bal_var2).grid(
             row=9, column=0, columnspan=2, sticky="w", padx=6, pady=6
         )
+        ttk.Label(dlg, text="链路层确认最多等 1.5s（后台等待，不卡界面）；\n链路应答超时用于命令确认等待",
+                  foreground="#666", justify=tk.LEFT).grid(
+            row=10, column=0, columnspan=2, sticky="w", padx=6
+        )
 
         def save_params():
             try:
@@ -419,7 +423,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             status.set(f"101 参数已保存（{data['serial_port']} {data['baudrate']}）")
 
         bt = ttk.Frame(dlg)
-        bt.grid(row=10, column=0, columnspan=2, pady=6)
+        bt.grid(row=11, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
 

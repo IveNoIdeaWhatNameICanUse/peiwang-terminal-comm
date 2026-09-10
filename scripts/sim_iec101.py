@@ -70,8 +70,9 @@ SOE_SP = mk_asdu(30, 3, CA, sp_tb_objects([(5, True)]))
 class SlaveSim:
     """Minimal unbalanced/balanced 101 slave."""
 
-    def __init__(self, balanced=False, acd=False):
+    def __init__(self, balanced=False, acd=False, single_char_ack=False):
         self.balanced = balanced
+        self.single_char_ack = single_char_ack   # reset link confirmed with E5 (per DL/T 634.5101)
         self.buf = bytearray()
         self.out = bytearray()
         self.pending = []
@@ -100,7 +101,10 @@ class SlaveSim:
             fc = info["fc"]
             self.fc_rx.append(fc)
             if fc == link.FC_RESET_LINK:
-                self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK), ADDR, ADDR_SIZE))
+                if self.single_char_ack:
+                    self.emit(link.build_single())
+                else:
+                    self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK), ADDR, ADDR_SIZE))
             elif fc == link.FC_REQ_LINK_STATUS:
                 self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK, self.acd), ADDR, ADDR_SIZE))
             elif fc in (link.FC_REQ_LEVEL1, link.FC_REQ_LEVEL2):
@@ -131,6 +135,33 @@ class SlaveSim:
         ctrl = link.ctrl_balanced(link.FC_DATA, False) if self.balanced \
             else link.ctrl_secondary(link.FC_DATA)
         self.emit(link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE))
+
+
+class SilentSim:
+    """Slave that never answers: verifies non-blocking connect + honest status."""
+
+    def __init__(self):
+        self.buf = bytearray()
+        self.out = bytearray()
+        self.rx_frames = []
+
+    def feed(self, data):
+        for frame in link.feed(self.buf, data, ADDR_SIZE):
+            self.rx_frames.append(frame)
+
+    def emit(self, _frame):
+        pass
+
+    def fc_list(self):
+        out = []
+        for f in self.rx_frames:
+            try:
+                info = link.parse_frame(f, ADDR_SIZE)
+            except Exception:
+                continue
+            if info["kind"] == "fixed":
+                out.append(info["fc"])
+        return out
 
 
 class LoopSerial:
@@ -189,7 +220,7 @@ def wait_for(pred, timeout=3.0):
 
 def run(unbalanced: bool):
     print("\n=== %s mode ===" % ("unbalanced" if unbalanced else "balanced"))
-    sim = SlaveSim(balanced=not unbalanced, acd=True)
+    sim = SlaveSim(balanced=not unbalanced, acd=True, single_char_ack=not unbalanced)
     install_fake_serial(sim)
     events = []
     m = Iec101Master(on_event=events.append)
@@ -202,6 +233,15 @@ def run(unbalanced: bool):
     check(m.connected, "connection established (fake serial)")
     check(wait_for(lambda: link.FC_RESET_LINK in sim.fc_rx, 1.5), "reset link (FC=0) sent")
     check(wait_for(lambda: link.FC_REQ_LINK_STATUS in sim.fc_rx, 1.5), "request link status (FC=9) sent")
+    def logs():
+        return [e.get("text", "") for e in events if e.get("type") == "log"]
+
+    check(wait_for(lambda: any("初始化完成" in t for t in logs()), 3.0),
+          "link init reported complete (slave confirmed)", str(logs()[:3])[:160])
+    check(not any("未收到从站确认" in t for t in logs()), "no false 'no confirmation' warning")
+    if not unbalanced:
+        check(any(e.get("type") == "frame" and e.get("direction") == "RX"
+                  and e.get("hex") == "E5" for e in events), "single-char E5 confirmation handled")
 
     if unbalanced:
         check(wait_for(lambda: (link.FC_REQ_LEVEL2 in sim.fc_rx), 2.0), "cyclic level-2 poll observed")
@@ -281,10 +321,36 @@ def run_link_roundtrip():
     check(list(link.feed(bytearray(), link.build_single(), 1))[0] == bytes([0xE5]), "single char E5 frame")
 
 
+def run_no_slave_response():
+    print("\n=== no slave response (non-blocking connect) ===")
+    sim = SilentSim()
+    install_fake_serial(sim)
+    events = []
+    m = Iec101Master(on_event=events.append)
+    m.session_id = "silent"
+    p = SerialParams(port="FAKE", link_addr=ADDR, addr_size=ADDR_SIZE, balanced=False,
+                     poll_period=0.3, resp_timeout=10.0, common_address=CA)
+    t0 = time.time()
+    m.connect(p)
+    dt = time.time() - t0
+    check(dt < 1.0, f"connect() returns immediately (took {dt:.2f}s)")
+    check(wait_for(lambda: link.FC_RESET_LINK in sim.fc_list(), 2.0), "reset link sent")
+    check(wait_for(lambda: link.FC_REQ_LINK_STATUS in sim.fc_list(), 2.0), "link status request sent")
+    check(wait_for(lambda: link.FC_REQ_LEVEL2 in sim.fc_list(), 3.0), "polling starts without waiting for link init")
+    def logs():
+        return [e.get("text", "") for e in events if e.get("type") == "log"]
+
+    check(wait_for(lambda: any("未收到从站确认" in t for t in logs()), 6.0),
+          "reports 'no confirmation' honestly when silent", str(logs())[:200])
+    check(not any("链路初始化完成" in t for t in logs()), "never claims init complete without confirmation")
+    m.disconnect()
+
+
 if __name__ == "__main__":
     run_link_roundtrip()
     run(unbalanced=True)
     run(unbalanced=False)
+    run_no_slave_response()
     print("\n%s (%d failure%s)" % ("ALL PASSED" if not FAILS else "FAILURES: " + ", ".join(FAILS),
                                   len(FAILS), "" if len(FAILS) == 1 else "s"))
     sys.exit(1 if FAILS else 0)
