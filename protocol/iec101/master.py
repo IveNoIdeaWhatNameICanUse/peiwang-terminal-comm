@@ -73,6 +73,7 @@ class Iec101Master:
         self._cs_compat = True         # 可变帧校验和兼容现场(连接时取参数)
         self._dir_override: Optional[bool] = None   # 探测期间临时覆盖“数据帧带DIR”
         self._saw_init_end = False     # 是否已收到从站“初始化结束”(M_EI_NA_1)
+        self._peer_active_frames = 0   # 从站主动发起帧计数(49/40 等)
         self._acd = False              # 从站请求访问位
 
     # ---------- helpers ----------
@@ -132,6 +133,7 @@ class Iec101Master:
         self._cs_compat = bool(getattr(p, "cs_compat", True))
         self._dir_override = None
         self._saw_init_end = False
+        self._peer_active_frames = 0
         self._buf.clear()
         self._stop.clear()
         self._fcb = False
@@ -296,6 +298,8 @@ class Iec101Master:
                 self._log("已收到从站初始化结束(M_EI_NA_1)，开始总召唤")
             else:
                 self._log("8s 内未收到从站初始化结束(M_EI_NA_1)：从站可能未就绪或已完成初始化，仍发送总召唤")
+            self._log(f"握手统计：从站主动帧(49/40 等) {self._peer_active_frames} 次，"
+                      f"初始化结束={'已收到' if self._saw_init_end else '未收到'}")
             # 以现场组合(DIR=带 + 校验和兼容，= KW-2200 报文)为主重试，最后两种为兜底
             combos = [(True, True), (True, True), (True, True), (True, False), (False, True)]
             for attempt, (use_dir, use_cs) in enumerate(combos, 1):
@@ -429,6 +433,7 @@ class Iec101Master:
                 self._acd = True
             if info["prm"]:
                 # 从站主动发起：主站需要响应（现场：请求链路状态 -> 链路忙 0x8B；复位链路 -> 确认 0x80）
+                self._peer_active_frames += 1
                 names_p = {0: "复位链路", 1: "复位用户进程", 2: "测试链路", 9: "请求链路状态",
                            10: "召唤1级数据", 11: "召唤2级数据"}
                 pname = names_p.get(fc, f"FC={fc}")
