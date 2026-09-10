@@ -67,6 +67,7 @@ class Iec101Master:
         self._connected = False
         self._ack_event = threading.Event()
         self._ack_ok = False
+        self._ack_note = ""            # 确认类型说明(如 链路忙)
         self._acd = False              # 从站请求访问位
 
     # ---------- helpers ----------
@@ -211,11 +212,36 @@ class Iec101Master:
         assert self._params
         self._send(link.build_fixed(ctrl, self._params.link_addr, self._params.addr_size), note)
 
+    def _arm_ack_wait(self) -> None:
+        """发送前调用：清确认标志。
+
+        必须在发送之前清：从站响应可能极快（模拟器/高速链路），
+        若在发送后才清，会把已经到达的确认丢掉，误判为“未确认”。
+        """
+        self._ack_ok = False
+        self._ack_note = ""
+        self._ack_event.clear()
+
     def _wait_ack(self, timeout: Optional[float] = None) -> bool:
         assert self._params
-        self._ack_event.clear()
         ok = self._ack_event.wait(timeout or self._params.resp_timeout)
         return ok and self._ack_ok
+
+    def _reply_fixed(self, fc: int, note: str, balanced_frame: bool = False) -> None:
+        """主站对“从站主动发起”的固定帧的响应。
+
+        balanced_frame=True 时按平衡格式回(DIR=1,PRM=0，如链路忙 0x8B)；
+        否则按非平衡从站响应格式(0x0B)。从站帧带 DIR 位时按平衡格式回，
+        使“未勾平衡但现场从站是平衡式”的情况也能通信。
+        """
+        assert self._params
+        p = self._params
+        ctrl = link.ctrl_balanced(fc, True, prm=False) if (p.balanced or balanced_frame) \
+            else link.ctrl_secondary(fc)
+        try:
+            self._send_fixed(ctrl, note)
+        except Iec101Error:
+            pass
 
     def _reset_link(self, ack_timeout: Optional[float] = None) -> bool:
         """复位链路(FC=0) 并请求链路状态(FC=9)；返回是否收到从站确认。"""
@@ -227,12 +253,14 @@ class Iec101Master:
             ctrl = link.ctrl_balanced(link.FC_RESET_LINK, True)
         else:
             ctrl = link.ctrl_primary(link.FC_RESET_LINK, False, False)
+        self._arm_ack_wait()
         self._send_fixed(ctrl, "复位链路(FC=0)")
         ok1 = self._wait_ack(t)
         if not self._connected:
             return False
         ctrl = link.ctrl_balanced(link.FC_REQ_LINK_STATUS, True) if p.balanced \
             else link.ctrl_primary(link.FC_REQ_LINK_STATUS, False, False)
+        self._arm_ack_wait()
         self._send_fixed(ctrl, "请求链路状态(FC=9)")
         ok2 = self._wait_ack(t)
         return bool(ok1 and ok2)
@@ -250,7 +278,13 @@ class Iec101Master:
         if not self._connected:
             return
         if ok:
-            self._log("101 链路初始化完成（从站已确认复位/链路状态）")
+            self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
+            # 链路建立后自动总召唤一次，便于现场立即获得全量数据
+            try:
+                self.general_interrogation()
+                self._log("已自动发送总召唤，等待从站上送数据")
+            except Iec101Error:
+                pass
         else:
             self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
 
@@ -289,6 +323,7 @@ class Iec101Master:
             ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), True)
             note = note or "用户数据(FC=3)"
         frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size)
+        self._arm_ack_wait()
         self._send(frame, note)
         self._await_link_ack(note)
 
@@ -341,13 +376,31 @@ class Iec101Master:
             acd = info.get("acd")
             if acd:
                 self._acd = True
-            if not info["prm"] and fc in (link.FC_ACK, link.FC_NACK, link.FC_NO_DATA, link.FC_LINK_BUSY):
-                self._ack_ok = (fc == link.FC_ACK)
+            if info["prm"]:
+                # 从站主动发起：主站需要响应（现场：请求链路状态 -> 链路忙 0x8B；复位链路 -> 确认 0x80）
+                names_p = {0: "复位链路", 1: "复位用户进程", 2: "测试链路", 9: "请求链路状态",
+                           10: "召唤1级数据", 11: "召唤2级数据"}
+                pname = names_p.get(fc, f"FC={fc}")
+                is_bal_frame = bool(info.get("dir")) or bool(self._params and self._params.balanced)
+                if fc == link.FC_REQ_LINK_STATUS:
+                    self._reply_fixed(link.FC_LINK_BUSY, "链路状态(链路忙)", is_bal_frame)
+                elif fc in (link.FC_RESET_LINK, link.FC_RESET_USER, link.FC_TEST_LINK):
+                    self._fcb = False
+                    self._reply_fixed(link.FC_ACK, "确认(ACK)", is_bal_frame)
+                self._emit({"type": "frame", "direction": "RX", "hex": codec104.hex_dump(frame),
+                            "note": f"从站发起:{pname}" + ("（ACD=1）" if acd else ""), "ts": time.time()})
+                return
+            if fc in (link.FC_ACK, link.FC_LINK_BUSY):
+                # 链路忙也是有效响应（现场从站用 0x0B 回应请求链路状态）
+                self._ack_ok = True
+                self._ack_note = "链路忙" if fc == link.FC_LINK_BUSY else "确认"
+                self._ack_event.set()
+            elif fc in (link.FC_NACK, link.FC_NO_DATA):
+                self._ack_ok = False
+                self._ack_note = "否认" if fc == link.FC_NACK else "无数据"
                 self._ack_event.set()
             names = {0: "确认(ACK)", 1: "否认(NACK)", 8: "用户数据", 9: "无所召唤数据", 11: "链路忙"}
             note = names.get(fc, f"固定帧 FC={fc}")
-            if info["prm"]:
-                note = f"从站固定帧(PRM=1) FC={fc}"
             self._emit({"type": "frame", "direction": "RX", "hex": codec104.hex_dump(frame),
                         "note": note + ("（ACD=1 请求访问）" if acd else ""), "ts": time.time()})
             return
@@ -389,10 +442,10 @@ class Iec101Master:
                 ],
             },
         })
-        # 链路确认：非平衡收到数据帧回 ACK；平衡回用户数据确认(FC=4)
+        # 链路确认：非平衡收到数据帧回 ACK；平衡回确认(现场为 0x80=DIR|FC=0)
         try:
             if p and p.balanced:
-                self._send_fixed(link.ctrl_balanced(link.FC_USER_DATA_CONF, True), "用户数据确认(FC=4)")
+                self._send_fixed(link.ctrl_balanced(link.FC_ACK, True, prm=False), "确认(ACK)")
             elif p:
                 self._send_fixed(link.ctrl_secondary(link.FC_ACK), "确认(ACK)")
         except Iec101Error:

@@ -2,6 +2,8 @@
 # Control field supports unbalanced (PRM/FCB/FCV) and balanced (DIR/FCB/FCV) modes.
 from __future__ import annotations
 
+from typing import Optional
+
 START_FIXED = 0x10
 START_VAR = 0x68
 END_BYTE = 0x16
@@ -35,15 +37,18 @@ def ctrl_secondary(fc: int, acd: bool = False, dfc: bool = False) -> int:
     return (0x20 if acd else 0) | (0x10 if dfc else 0) | (fc & 0x0F)
 
 
-def ctrl_balanced(fc: int, dir_master: bool = True, fcb: bool = False, fcv: bool = False) -> int:
+def ctrl_balanced(fc: int, dir_master: bool = True, fcb: bool = False, fcv: bool = False,
+                  prm: Optional[bool] = None) -> int:
     """Balanced mode control byte: DIR + PRM + FCB + FCV + FC.
 
-    Master-originated frames set DIR=1 and PRM=1 -> 0xC0 base (matches field
-    captures: reset link 0xC0, request link status 0xC9, user data 0xF3).
-    Slave-originated frames keep both bits clear.
+    Master-originated frames: DIR=1, PRM=1 -> 0xC0 base (reset 0xC0, link status 0xC9,
+    user data 0xF3). Master responses: DIR=1, PRM=0 -> 0x80 base (ACK 0x80, link busy 0x8B).
+    Slave frames keep DIR=0; a slave-originated frame sets PRM=1 (e.g. 0x49).
     """
-    base = 0xC0 if dir_master else 0x00
-    return base | (0x20 if fcb else 0) | (0x10 if fcv else 0) | (fc & 0x0F)
+    if prm is None:
+        prm = dir_master
+    return (0x80 if dir_master else 0x00) | (0x40 if prm else 0x00) \
+        | (0x20 if fcb else 0x00) | (0x10 if fcv else 0x00) | (fc & 0x0F)
 
 
 def parse_ctrl(c: int) -> dict:

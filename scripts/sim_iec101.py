@@ -97,7 +97,8 @@ class SlaveSim:
 
     def handle(self, info):
         if info["kind"] == "fixed":
-            if not self.balanced and not info["prm"]:
+            if not info["prm"]:
+                # 主站响应帧(确认/链路忙)或非平衡从站帧:不响应
                 self.ack_rx.append(info["fc"])
                 return
             fc = info["fc"]
@@ -108,7 +109,12 @@ class SlaveSim:
                 else:
                     self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK), ADDR, ADDR_SIZE))
             elif fc == link.FC_REQ_LINK_STATUS:
-                self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK, self.acd), ADDR, ADDR_SIZE))
+                # 现场从站：用“链路忙”(FC=11)回应请求链路状态
+                self.emit(link.build_fixed(link.ctrl_secondary(link.FC_LINK_BUSY), ADDR, ADDR_SIZE))
+                if self.balanced:
+                    # 并主动发起请求链路状态(PRM=1, DIR=0 -> 0x49)，期待主站回“链路忙”(0x8B)
+                    self.emit(link.build_fixed(
+                        link.ctrl_balanced(link.FC_REQ_LINK_STATUS, False, prm=True), ADDR, ADDR_SIZE))
             elif fc in (link.FC_REQ_LEVEL1, link.FC_REQ_LEVEL2):
                 self.serve_poll()
             return
@@ -131,7 +137,9 @@ class SlaveSim:
 
     def serve_poll(self):
         if not self.pending:
-            self.emit(link.build_fixed(link.ctrl_secondary(link.FC_NO_DATA), ADDR, ADDR_SIZE))
+            ctrl = link.ctrl_secondary(link.FC_NO_DATA, self.acd)
+            self.acd = False
+            self.emit(link.build_fixed(ctrl, ADDR, ADDR_SIZE))
             return
         asdu = self.pending.pop(0)
         ctrl = link.ctrl_balanced(link.FC_DATA, False) if self.balanced \
@@ -257,14 +265,12 @@ def run(unbalanced: bool):
     got_me = wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 13 for e in events), 3.0)
     check(got_me, "spontaneous M_ME_NC_1 delivered to points event")
 
-    # general interrogation
-    base = len([e for e in events if e.get("type") == "points"])
-    m.general_interrogation()
-    check(wait_for(lambda: sim.interrogated, 2.0), "slave received C_IC_NA_1 (COT=6)")
+    # general interrogation is auto-issued right after link init
+    check(wait_for(lambda: sim.interrogated, 4.0), "slave received C_IC_NA_1 (COT=6) [auto GI]")
     check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 1
-                               for e in events[base:]), 4.0), "GI single points delivered")
+                               for e in events), 5.0), "GI single points delivered")
     check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 13
-                               and e.get("cot") in (9, 10, 20) for e in events[base:]), 4.0),
+                               and e.get("cot") in (9, 10, 20) for e in events), 5.0),
           "GI measured values delivered")
     gi_end = wait_for(lambda: any(e.get("type") == "frame" and e.get("direction") == "RX"
                                   and (e.get("asdu") or {}).get("type_id") == 100
@@ -284,8 +290,8 @@ def run(unbalanced: bool):
         sim.emit(link.build_variable(link.ctrl_balanced(link.FC_DATA, False), ADDR, SOE_SP, ADDR_SIZE))
         check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 30 for e in events), 3.0),
               "SOE (M_SP_TB_1) pushed by slave")
-        check(wait_for(lambda: link.FC_USER_DATA_CONF in sim.fc_rx, 2.0),
-              "user-data confirmation (FC=4) returned to slave")
+        check(wait_for(lambda: link.FC_ACK in sim.ack_rx, 2.0),
+              "master acknowledges slave data (FC=0 / 0x80)")
 
     tx = [e for e in events if e.get("type") == "frame" and e.get("direction") == "TX"]
     rx = [e for e in events if e.get("type") == "frame" and e.get("direction") == "RX"]
@@ -301,6 +307,9 @@ def run(unbalanced: bool):
               "frame format: reset link = 10 C0 01 00 C1 16", str(raw[:3]))
         check(any(h == "10 C9 01 00 CA 16" for h in raw),
               "frame format: link status = 10 C9 01 00 CA 16")
+        check(any(h == "10 8B 01 00 8C 16" for h in raw),
+              "master answers slave-originated link-status request with link busy (10 8B 01 00 8C 16)",
+              str([h for h in raw if h.startswith("10 8")][:2]))
     want_c = ("73", "53") if unbalanced else ("F3", "D3")
     check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
           f"frame format: user-data control byte = 0x{want_c[0]}/0x{want_c[1]}",
