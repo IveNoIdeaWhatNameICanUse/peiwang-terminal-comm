@@ -310,9 +310,9 @@ def run(unbalanced: bool):
         check(any(h == "10 8B 01 00 8C 16" for h in raw),
               "master answers slave-originated link-status request with link busy (10 8B 01 00 8C 16)",
               str([h for h in raw if h.startswith("10 8")][:2]))
-    want_c = ("73", "53") if unbalanced else ("F3", "D3")
+    want_c = ("73", "53")   # 现场 KW-2200：用户数据帧不带 DIR（平衡/非平衡均如此）
     check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
-          f"frame format: user-data control byte = 0x{want_c[0]}/0x{want_c[1]}",
+          "frame format: user-data control byte = 0x73/0x53 (no DIR)",
           str([h[:23] for h in raw if h.startswith("68")][:2]))
     print("  frames: TX=%d RX=%d, slave got %d ASDUs" % (len(tx), len(rx), len(sim.rx_asdus)))
     for a in sim.rx_asdus:
@@ -373,10 +373,33 @@ def run_no_slave_response():
     m.disconnect()
 
 
+def run_dir_variant():
+    """Optional style: balanced master that DOES set DIR in user-data frames."""
+    print("\n=== balanced with DIR in user-data frames ===")
+    sim = SlaveSim(balanced=True, acd=False, single_char_ack=True)
+    install_fake_serial(sim)
+    m = Iec101Master(on_event=lambda _e: None)
+    m.session_id = "dirdata"
+    p = SerialParams(port="FAKE", link_addr=ADDR, addr_size=ADDR_SIZE, balanced=True,
+                     data_frame_dir=True, resp_timeout=1.0)
+    m.connect(p)
+    check(wait_for(lambda: any(link.parse_frame(f, ADDR_SIZE)["kind"] == "fixed"
+                               and link.parse_frame(f, ADDR_SIZE)["fc"] == link.FC_REQ_LINK_STATUS
+                               for f in sim.rx_frames), 3.0), "link init done")
+    m.clock_sync()
+    raw = [f.hex(" ").upper() for f in sim.rx_frames]
+    check(wait_for(lambda: any(len(h.split(" ")) > 6 and h.split(" ")[4] in ("F3", "D3")
+                               for h in raw if h.startswith("68")), 3.0),
+          "user-data control byte = 0xF3/0xD3 when DIR enabled",
+          str([h[:23] for h in raw if h.startswith("68")][:2]))
+    m.disconnect()
+
+
 if __name__ == "__main__":
     run_link_roundtrip()
     run(unbalanced=True)
     run(unbalanced=False)
+    run_dir_variant()
     run_no_slave_response()
     print("\n%s (%d failure%s)" % ("ALL PASSED" if not FAILS else "FAILURES: " + ", ".join(FAILS),
                                   len(FAILS), "" if len(FAILS) == 1 else "s"))

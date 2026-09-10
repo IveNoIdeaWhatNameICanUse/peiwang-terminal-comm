@@ -51,6 +51,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     poll_var = tk.StringVar(value="1.0")
     ioa101_var = tk.StringVar(value="2")
     addr101_var = tk.StringVar(value="2")
+    dfdir_var = tk.BooleanVar(value=False)
     _session_ids: list[str] = []
     _loading = {"flag": False}
 
@@ -120,6 +121,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             poll_var.set(str(s.get("poll_period") or 1.0))
             ioa101_var.set(str(s.get("ioa_size_101") or 2))
             addr101_var.set(str(s.get("addr_size") or 2))
+            dfdir_var.set(bool(s.get("data_frame_dir", False)))
             try:
                 on_proto_change()
             except Exception:
@@ -153,6 +155,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 "poll_period": float(poll_var.get() or 1.0),
                 "ioa_size_101": int(ioa101_var.get() or 2),
                 "addr_size": int(addr101_var.get() or 2),
+                "data_frame_dir": bool(dfdir_var.get()),
             },
         )
         api.set_active_session(sid)
@@ -279,11 +282,13 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                                  width=4, state="readonly")
     addr101_combo.grid(row=6, column=3, sticky="w", padx=4)
     ttk.Label(conn, text="（默认 2 字节，部分现场用 1 字节）").grid(
-        row=6, column=4, columnspan=4, sticky="w")
+        row=6, column=4, columnspan=2, sticky="w")
+    chk_dfdir = ttk.Checkbutton(conn, text="数据帧带DIR", variable=dfdir_var)
+    chk_dfdir.grid(row=6, column=6, columnspan=2, sticky="w")
 
     net_widgets = [local_combo]
     ser_widgets = [sport_combo, baud_combo, parity_combo, stop_combo, linkaddr_entry, chk_bal,
-                   poll_entry, btn_sport, ioa101_combo, addr101_combo]
+                   poll_entry, btn_sport, ioa101_combo, addr101_combo, chk_dfdir]
     params_btn = {"w": None}   # 稍后创建：按协议切换文案
 
     def on_proto_change():
@@ -378,6 +383,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         ack_var = gv("link_ack_timeout", 10.0)
         ioa_var2 = gv("ioa_size_101", 2)
         bal_var2 = tk.BooleanVar(value=bool(sess.get("balanced", False)))
+        dfdir_var2 = tk.BooleanVar(value=bool(sess.get("data_frame_dir", False)))
 
         ttk.Label(dlg, text="101 串口 / 链路（保存后重新连接生效）", font=("", 10, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 4)
@@ -404,11 +410,15 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         add_row(9, "信息体地址长度(字节)", ttk.Combobox(dlg, textvariable=ioa_var2,
                                                        values=["2", "3"], width=6, state="readonly"))
         ttk.Checkbutton(dlg, text="平衡方式（不勾选=非平衡周期轮询）", variable=bal_var2).grid(
-            row=10, column=0, columnspan=2, sticky="w", padx=6, pady=6
+            row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 0)
+        )
+        ttk.Checkbutton(dlg, text="用户数据帧带 DIR 位（默认不勾，与 KW-2200 现场一致）",
+                        variable=dfdir_var2).grid(
+            row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
         )
         ttk.Label(dlg, text="链路层确认最多等 1.5s（后台等待，不卡界面）；\n链路应答超时用于命令确认等待",
                   foreground="#666", justify=tk.LEFT).grid(
-            row=11, column=0, columnspan=2, sticky="w", padx=6
+            row=12, column=0, columnspan=2, sticky="w", padx=6
         )
 
         def save_params():
@@ -424,6 +434,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                     "link_ack_timeout": float(ack_var.get() or 10.0),
                     "ioa_size_101": int(ioa_var2.get() or 2),
                     "balanced": bool(bal_var2.get()),
+                    "data_frame_dir": bool(dfdir_var2.get()),
                 }
                 api.update_session(sid, data)
             except ValueError as e:
@@ -434,7 +445,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             status.set(f"101 参数已保存（{data['serial_port']} {data['baudrate']}）")
 
         bt = ttk.Frame(dlg)
-        bt.grid(row=12, column=0, columnspan=2, pady=6)
+        bt.grid(row=13, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
 

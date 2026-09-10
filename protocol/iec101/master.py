@@ -32,6 +32,7 @@ class SerialParams:
     link_addr: int = 1         # 链路地址
     addr_size: int = 1         # 链路地址长度(1/2 字节)
     balanced: bool = False     # True=平衡方式, False=非平衡方式
+    data_frame_dir: bool = False  # 用户数据帧是否带 DIR 位(现场 KW-2200: 不带 -> 0x73/0x53)
     poll_period: float = 1.0   # 非平衡轮询周期(秒)
     resp_timeout: float = 5.0  # 等待应答超时(秒)
     common_address: int = 1
@@ -315,11 +316,11 @@ class Iec101Master:
         """发送 ASDU：非平衡=用户数据(FC=3)等 ACK；平衡=用户数据(DIR=1)等确认。"""
         assert self._params
         p = self._params
-        if p.balanced:
+        if p.balanced and p.data_frame_dir:
             ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, self._next_fcb(), True)
             note = note or "用户数据(平衡)"
         else:
-            # 现场抓包：主站用户数据帧 0x73/0x53（PRM|FCB|FCV|FC=3）
+            # 现场抓包(KW-2200)：主站用户数据帧不带 DIR -> 0x73/0x53（PRM|FCB|FCV|FC=3）
             ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), True)
             note = note or "用户数据(FC=3)"
         frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size)
