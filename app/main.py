@@ -72,6 +72,7 @@ def run_pywebview(api: ApiBridge) -> bool:
         js_api=api,
         width=1180,
         height=820,
+        min_size=(1100, 720),
     )
 
     def push(event: dict) -> None:

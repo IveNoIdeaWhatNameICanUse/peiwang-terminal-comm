@@ -42,17 +42,6 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     oa = tk.StringVar(value="0")
     status = tk.StringVar(value="未连接")
     proto_var = tk.StringVar(value="104")
-    sport_var = tk.StringVar(value="COM1")
-    baud_var = tk.StringVar(value="9600")
-    parity_var = tk.StringVar(value="E")
-    stopbits_var = tk.StringVar(value="1")
-    linkaddr_var = tk.StringVar(value="1")
-    balanced_var = tk.BooleanVar(value=False)
-    poll_var = tk.StringVar(value="1.0")
-    ioa101_var = tk.StringVar(value="2")
-    addr101_var = tk.StringVar(value="2")
-    dfdir_var = tk.BooleanVar(value=False)
-    cscompat_var = tk.BooleanVar(value=True)
     _session_ids: list[str] = []
     _loading = {"flag": False}
 
@@ -113,17 +102,6 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             ca.set(str(s.get("common_address") or 1))
             oa.set(str(s.get("originator") or 0))
             proto_var.set(str(s.get("protocol") or "104"))
-            sport_var.set(str(s.get("serial_port") or "COM1"))
-            baud_var.set(str(s.get("baudrate") or 9600))
-            parity_var.set(str(s.get("serial_parity") or "E"))
-            stopbits_var.set(str(s.get("stopbits") or 1))
-            linkaddr_var.set(str(s.get("link_addr") or 1))
-            balanced_var.set(bool(s.get("balanced", False)))
-            poll_var.set(str(s.get("poll_period") or 1.0))
-            ioa101_var.set(str(s.get("ioa_size_101") or 2))
-            addr101_var.set(str(s.get("addr_size") or 2))
-            dfdir_var.set(bool(s.get("data_frame_dir", False)))
-            cscompat_var.set(bool(s.get("cs_compat", True)))
             try:
                 on_proto_change()
             except Exception:
@@ -148,17 +126,6 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 "common_address": int(ca.get() or 1),
                 "originator": int(oa.get() or 0),
                 "protocol": proto_var.get(),
-                "serial_port": sport_var.get().strip() or "COM1",
-                "baudrate": int(baud_var.get() or 9600),
-                "serial_parity": parity_var.get() or "E",
-                "stopbits": int(stopbits_var.get() or 1),
-                "link_addr": int(linkaddr_var.get() or 1),
-                "balanced": bool(balanced_var.get()),
-                "poll_period": float(poll_var.get() or 1.0),
-                "ioa_size_101": int(ioa101_var.get() or 2),
-                "addr_size": int(addr101_var.get() or 2),
-                "data_frame_dir": bool(dfdir_var.get()),
-                "cs_compat": bool(cscompat_var.get()),
             },
         )
         api.set_active_session(sid)
@@ -243,58 +210,14 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ttk.Entry(conn, textvariable=oa, width=8).grid(row=2, column=3, sticky="w", padx=4)
     ttk.Label(conn, textvariable=status).grid(row=2, column=4, columnspan=2, sticky="e")
 
-    # ---- 协议选择：104(TCP) / 101(串口,平衡/非平衡) ----
+    # ---- 协议选择：104(TCP) / 101(串口,平衡/非平衡)；参数各由对应按钮设置 ----
     ttk.Label(conn, text="协议").grid(row=0, column=6, sticky="w", padx=(10, 0))
     proto_combo = ttk.Combobox(conn, textvariable=proto_var, values=["104", "101"],
                                width=6, state="readonly")
     proto_combo.grid(row=0, column=7, sticky="w", padx=4)
 
-    ttk.Label(conn, text="(101) 串口").grid(row=4, column=0, sticky="w")
-    sport_combo = ttk.Combobox(conn, textvariable=sport_var, width=10)
-    sport_combo.grid(row=4, column=1, sticky="w", padx=4)
-    ttk.Label(conn, text="波特率").grid(row=4, column=2)
-    baud_combo = ttk.Combobox(conn, textvariable=baud_var, width=8,
-                              values=["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"])
-    baud_combo.grid(row=4, column=3, sticky="w", padx=4)
-    ttk.Label(conn, text="校验").grid(row=4, column=4)
-    parity_combo = ttk.Combobox(conn, textvariable=parity_var, values=["N", "E", "O"],
-                                width=4, state="readonly")
-    parity_combo.grid(row=4, column=5, sticky="w", padx=4)
-
-    ttk.Label(conn, text="停止位").grid(row=5, column=0, sticky="w")
-    stop_combo = ttk.Combobox(conn, textvariable=stopbits_var, values=["1", "2"],
-                              width=4, state="readonly")
-    stop_combo.grid(row=5, column=1, sticky="w", padx=4)
-    ttk.Label(conn, text="链路地址").grid(row=5, column=2)
-    linkaddr_entry = ttk.Entry(conn, textvariable=linkaddr_var, width=6)
-    linkaddr_entry.grid(row=5, column=3, sticky="w", padx=4)
-    chk_bal = ttk.Checkbutton(conn, text="平衡方式", variable=balanced_var)
-    chk_bal.grid(row=5, column=4, sticky="w")
-    ttk.Label(conn, text="轮询周期(s)").grid(row=5, column=5, sticky="e", padx=(0, 2))
-    poll_entry = ttk.Entry(conn, textvariable=poll_var, width=6)
-    poll_entry.grid(row=5, column=6, sticky="w")
-    btn_sport = ttk.Button(conn, text="刷新串口", command=lambda: refresh_serial_ports())
-    btn_sport.grid(row=5, column=7, sticky="w", padx=4)
-
-    ttk.Label(conn, text="信息体地址长度").grid(row=6, column=0, sticky="w")
-    ioa101_combo = ttk.Combobox(conn, textvariable=ioa101_var, values=["2", "3"],
-                                width=4, state="readonly")
-    ioa101_combo.grid(row=6, column=1, sticky="w", padx=4)
-    ttk.Label(conn, text="链路地址长度").grid(row=6, column=2)
-    addr101_combo = ttk.Combobox(conn, textvariable=addr101_var, values=["1", "2"],
-                                 width=4, state="readonly")
-    addr101_combo.grid(row=6, column=3, sticky="w", padx=4)
-    ttk.Label(conn, text="（默认 2 字节，部分现场用 1 字节）").grid(
-        row=6, column=4, columnspan=2, sticky="w")
-    chk_dfdir = ttk.Checkbutton(conn, text="数据帧带DIR", variable=dfdir_var)
-    chk_dfdir.grid(row=6, column=6, columnspan=2, sticky="w")
-    chk_cs = ttk.Checkbutton(conn, text="校验和兼容(KW-2200)", variable=cscompat_var)
-    chk_cs.grid(row=7, column=6, columnspan=2, sticky="w")
-
     net_widgets = [local_combo]
-    ser_widgets = [sport_combo, baud_combo, parity_combo, stop_combo, linkaddr_entry, chk_bal,
-                   poll_entry, btn_sport, ioa101_combo, addr101_combo, chk_dfdir, chk_cs]
-    params_btn = {"w": None}   # 稍后创建：按协议切换文案
+    param_btns = {"104": None, "101": None}   # 稍后创建：按协议启用/禁用
 
     def on_proto_change():
         is101 = proto_var.get() == "101"
@@ -303,36 +226,16 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 w.configure(state="normal" if not is101 else "disabled")
             except tk.TclError:
                 pass
-        for w in ser_widgets:
-            try:
-                w.configure(state="disabled" if not is101 else "normal")
-            except tk.TclError:
-                pass
         proto_combo.configure(state="readonly")
-        if is101:
-            refresh_serial_ports()
-            vals = list(sport_combo.cget("values") or [])
-            if vals and sport_var.get().strip() not in vals:
-                sport_var.set(vals[0])   # 切到 101 时自动选中枚举到的第一个串口
-        if params_btn["w"] is not None:
-            try:
-                params_btn["w"].configure(text="101 参数设置" if is101 else "104 参数设置")
-            except tk.TclError:
-                pass
+        try:
+            if param_btns["104"] is not None:
+                param_btns["104"].configure(state="disabled" if is101 else "normal")
+            if param_btns["101"] is not None:
+                param_btns["101"].configure(state="normal" if is101 else "disabled")
+        except tk.TclError:
+            pass
 
     proto_combo.bind("<<ComboboxSelected>>", lambda _e: on_proto_change())
-
-    def refresh_serial_ports():
-        ports = api.list_serial_ports() or []
-        values = [p.get("port") for p in ports if p.get("port")]
-        if not values:
-            # 本机枚举不到串口（或虚拟串口未被识别）时保留手输值，避免下拉为空
-            values = [sport_var.get().strip() or "COM1"]
-        sport_combo["values"] = values
-        if sport_var.get() not in values:
-            sport_var.set(values[0])
-
-    on_proto_change()  # 初始按默认协议(104)禁用/启用
 
     def refresh_nics():
         nics = api.get_nics()
@@ -341,6 +244,12 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
 
     def do_connect():
         apply_form_to_session()
+        sid = current_sid()
+        sess = next((x for x in (api.list_sessions().get("sessions") or []) if x["id"] == sid), None)
+        if sess and str(sess.get("protocol") or "104") == "101" \
+                and not str(sess.get("serial_port") or "").strip():
+            messagebox.showwarning("提示", "请先点「101 参数设置」选择串口，再连接")
+            return
         r = api.connect()
         refresh_session_list(current_sid())
         if not r.get("ok"):
@@ -395,12 +304,24 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 4)
         )
         ports = [p.get("port") for p in (api.list_serial_ports() or []) if p.get("port")]
+        port_combo2 = ttk.Combobox(dlg, textvariable=port_var2, values=ports, width=14)
 
         def add_row(r, label, widget):
             ttk.Label(dlg, text=label).grid(row=r, column=0, sticky="w", padx=6, pady=2)
             widget.grid(row=r, column=1, sticky="w", padx=6, pady=2)
 
-        add_row(1, "串口", ttk.Combobox(dlg, textvariable=port_var2, values=ports, width=14))
+        add_row(1, "串口", port_combo2)
+
+        def _refresh_ports_101():
+            vals = [p.get("port") for p in (api.list_serial_ports() or []) if p.get("port")]
+            if not vals:
+                vals = [port_var2.get().strip() or "COM1"]
+            port_combo2["values"] = vals
+            if port_var2.get() not in vals:
+                port_var2.set(vals[0])
+
+        ttk.Button(dlg, text="刷新串口", command=_refresh_ports_101).grid(
+            row=1, column=2, sticky="w", padx=4)
         add_row(2, "波特率", ttk.Combobox(
             dlg, textvariable=baud_var2, width=12,
             values=["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]))
@@ -475,9 +396,6 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 sess = x
                 break
         if not sess:
-            return
-        if str(sess.get("protocol") or "") == "101":
-            open_101_params_dialog(sess, sid)
             return
 
         dlg = tk.Toplevel(win)
@@ -576,6 +494,16 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
 
+    def open_101_params_for_current():
+        """当前会话的 101 串口/链路参数（集中设置入口）。"""
+        sid = current_sid()
+        if not sid:
+            messagebox.showwarning("提示", "请先选择主站")
+            return
+        sess = next((x for x in (api.list_sessions().get("sessions") or []) if x["id"] == sid), None)
+        if sess:
+            open_101_params_dialog(sess, sid)
+
     btns = ttk.Frame(conn)
     btns.grid(row=3, column=0, columnspan=6, sticky="w", pady=6)
     ttk.Button(btns, text="连接", command=do_connect).pack(side=tk.LEFT, padx=3)
@@ -585,8 +513,14 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     )
     ttk.Button(btns, text="刷新网卡", command=refresh_nics).pack(side=tk.LEFT, padx=3)
     ttk.Button(btns, text="保存工程", command=do_save).pack(side=tk.LEFT, padx=3)
-    params_btn["w"] = ttk.Button(btns, text="104 参数设置", command=open_params_dialog)
-    params_btn["w"].pack(side=tk.LEFT, padx=3)
+    param_btns["104"] = ttk.Button(btns, text="104 参数设置", command=open_params_dialog)
+    param_btns["104"].pack(side=tk.LEFT, padx=3)
+    param_btns["101"] = ttk.Button(btns, text="101 参数设置", command=open_101_params_for_current)
+    param_btns["101"].pack(side=tk.LEFT, padx=3)
+    try:
+        on_proto_change()      # 按当前协议启用对应按钮
+    except tk.TclError:
+        pass
 
     # ---- 四遥 ----
     ops = ttk.LabelFrame(frm, text="四遥操作（作用于当前会话）", padding=8)
@@ -1738,12 +1672,22 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         win.destroy()
 
     refresh_nics()
-    refresh_serial_ports()
     refresh_session_list()
     ensure_station_tabs()
     reload_points()
     poll_events()
     win.protocol("WM_DELETE_WINDOW", on_close)
+    # 限制最小窗口：不允许缩到遮挡/隐藏按钮与参数区
+    try:
+        win.update_idletasks()
+        _mw = max(1180, win.winfo_reqwidth() + 24)
+        _mh = max(760, win.winfo_reqheight() + 24)
+        win.minsize(_mw, _mh)
+        _cur_w, _cur_h = win.winfo_width(), win.winfo_height()
+        if _cur_w < _mw or _cur_h < _mh:
+            win.geometry(f"{_mw}x{_mh}")
+    except tk.TclError:
+        pass
     win.mainloop()
 
 
