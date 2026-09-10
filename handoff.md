@@ -30,10 +30,13 @@
 | 多主站模式 | 已实现（待充分验证） | 多 session 同时在线；UI 可新建/删除/切换；遥控等操作作用在当前选中会话 |
 | PyInstaller 打包 | 脚本就绪 | `python scripts/build_exe.py` → `dist\配网终端通讯\配网终端通讯.exe` |
 | 离线装依赖 | 就绪 | `scripts/install_offline_wheels.py` |
+| IEC 101（平衡/非平衡） | 完成 | `protocol/iec101/`（FT1.2 链路 + 主站）；UI 可选协议与串口参数；模拟从站自测脚本 `scripts/sim_iec101.py`、`scripts/sim_iec101_api.py` |
+| 事件记录 / 四遥统计 | 完成 | 见 `core/eventlog.py`；修正自动建点未写四遥类别导致首帧不计统计的问题 |
 
 ### 未做 / 后续
 
-- IEC 101（平衡优先）
+- 101 实机联调（真实终端串口、厂家参数确认：IOA 长度/链路地址/平衡方式）
+- 101 的非平衡「一级数据主动上送 + ACD 轮询」实机时序调优
 - 更完整点表/工程管理体验
 - 与 c104 / lib60870 桥接（可选）
 - 清理全仓库 `AGENT_CHANGE` 标记（用户未确认清理前保留）
@@ -158,7 +161,18 @@ python scripts/build_exe.py
 
 ---
 
-## 9. 关键对话结论备忘
+## 9. 101（串口）使用要点
+
+- 协议层：`protocol/iec101/link.py`（FT1.2 帧编解码，链路地址 1/2 字节）、`protocol/iec101/master.py`
+- 非平衡：复位链路(FC=0) → 请求链路状态(FC=9) → 周期召唤 2 级(FC=11)；收到 ACD=1 时下次召唤 1 级(FC=10)；用户数据 FC=3 等 ACK
+- 平衡：控制域 DIR/FCB，用户数据等 FC=4 确认；链路初始化同复用 FC=0/FC=9
+- 会话参数：`protocol=101`、`serial_port`、`baudrate`、`serial_parity`、`stopbits`、`link_addr`（>255 自动 2 字节）、`balanced`、`poll_period`、`ioa_size_101`（默认 2 字节）
+- UI：连接参数区「协议」下拉切换，选 101 后显示串口参数（Tk 与 WebView 均已同步）
+- 自测：`python scripts/sim_iec101.py`（内存回环模拟从站）、`python scripts/sim_iec101_api.py`（API 层集成）
+
+---
+
+## 10. 关键对话结论备忘
 
 - 默认 UI：**Tk**（方案 B），不是 WebView
 - 用户明确要求：**去掉内嵌 UI 相关修改**（已删 `app/embedded_ui.py`、`scripts/embed_ui.py`）
