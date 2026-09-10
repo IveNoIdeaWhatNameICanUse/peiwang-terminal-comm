@@ -272,17 +272,31 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         else:
             messagebox.showerror("保存失败", r.get("error", ""))
 
+    def _fit_dialog(dlg, min_w: int = 400, min_h: int = 320) -> None:
+        """对话框按内容自适应尺寸并居中显示，避免内容被截断看不到按钮。"""
+        try:
+            dlg.update_idletasks()
+            w = max(int(min_w), dlg.winfo_reqwidth() + 24)
+            h = max(int(min_h), dlg.winfo_reqheight() + 24)
+            sh = win.winfo_screenheight()
+            if h > sh - 120:
+                h = max(320, sh - 120)
+            x = win.winfo_rootx() + max(0, (win.winfo_width() - w) // 2)
+            y = win.winfo_rooty() + max(0, (win.winfo_height() - h) // 2)
+            y = max(20, min(y, sh - h - 60))
+            dlg.geometry(f"{w}x{h}+{x}+{y}")
+            dlg.minsize(w, h)
+            dlg.deiconify()
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+
     def open_101_params_dialog(sess, sid):
-        """101 串口/链路参数设置对话框。"""
+        """101 串口/链路参数设置对话框（尺寸按内容自适应，避免显示不全）。"""
         dlg = tk.Toplevel(win)
         dlg.title(f"101 参数设置 - {sess.get('name')}")
         dlg.transient(win)
-        dlg.grab_set()
-        win.update_idletasks()
-        _w, _h = 400, 340
-        _x = win.winfo_rootx() + max(0, (win.winfo_width() - _w) // 2)
-        _y = win.winfo_rooty() + max(0, (win.winfo_height() - _h) // 2)
-        dlg.geometry(f"{_w}x{_h}+{_x}+{_y}")
+        dlg.withdraw()
 
         def gv(key, default):
             return tk.StringVar(value=str(sess.get(key, default)))
@@ -383,6 +397,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         bt.grid(row=15, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
+        _fit_dialog(dlg, min_w=440, min_h=420)
 
     def open_params_dialog():
         # 104 参数设置（KW-2200 风格），保存到当前主站，重新连接后生效
@@ -401,12 +416,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         dlg = tk.Toplevel(win)
         dlg.title(f"104 参数设置 - {sess.get('name')}")
         dlg.transient(win)
-        dlg.grab_set()
-        # 居中于主窗口（避免出现在其他屏幕默认位置）
-        win.update_idletasks()
-        _x = win.winfo_rootx() + max(0, (win.winfo_width() - 360) // 2)
-        _y = win.winfo_rooty() + max(0, (win.winfo_height() - 520) // 2)
-        dlg.geometry(f"360x520+{_x}+{_y}")
+        dlg.withdraw()
 
         def gv(key, default):
             return tk.StringVar(value=str(sess.get(key, default)))
@@ -493,6 +503,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         bt.grid(row=r, column=0, columnspan=2, pady=4)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
+        _fit_dialog(dlg, min_w=420, min_h=520)
 
     def open_101_params_for_current():
         """当前会话的 101 串口/链路参数（集中设置入口）。"""
