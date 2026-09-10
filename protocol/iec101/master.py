@@ -32,7 +32,7 @@ class SerialParams:
     link_addr: int = 1         # 链路地址
     addr_size: int = 1         # 链路地址长度(1/2 字节)
     balanced: bool = False     # True=平衡方式, False=非平衡方式
-    data_frame_dir: bool = False  # 用户数据帧是否带 DIR 位(现场 KW-2200: 不带 -> 0x73/0x53)
+    data_frame_dir: bool = True   # 用户数据帧带 DIR 位(现场 KW-2200: 带 -> 0xF3/0xD3)
     cs_compat: bool = True        # 可变帧校验和兼容现场(KW-2200)：控制位 bit7 取反
     poll_period: float = 1.0   # 非平衡轮询周期(秒)
     resp_timeout: float = 5.0  # 等待应答超时(秒)
@@ -71,6 +71,7 @@ class Iec101Master:
         self._ack_ok = False
         self._ack_note = ""            # 确认类型说明(如 链路忙)
         self._cs_compat = True         # 可变帧校验和兼容现场(连接时取参数)
+        self._dir_override: Optional[bool] = None   # 探测期间临时覆盖“数据帧带DIR”
         self._acd = False              # 从站请求访问位
 
     # ---------- helpers ----------
@@ -128,6 +129,7 @@ class Iec101Master:
             raise Iec101Error("SERIAL_OPEN_FAILED", f"串口打开失败：{p.port} — {e}") from e
         self._params = p
         self._cs_compat = bool(getattr(p, "cs_compat", True))
+        self._dir_override = None
         self._buf.clear()
         self._stop.clear()
         self._fcb = False
@@ -285,17 +287,20 @@ class Iec101Master:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
             if self._ack_note == "链路忙":
                 time.sleep(0.5)          # 从站报“链路忙”：稍等再发数据
-            # 链路建立后自动总召唤；未得到任何响应则切换校验和算法重试(最多 3 次)
-            for attempt in range(1, 4):
+            # 自动总召唤：依次尝试三种控制位/校验和组合，哪种得到响应就固定（用户无需关心开关）
+            combos = [(True, True), (False, True), (True, False)]
+            for attempt, (use_dir, use_cs) in enumerate(combos, 1):
                 if not self._connected:
                     return
+                self._dir_override = use_dir
+                self._cs_compat = use_cs
                 before = self._last_rx
                 try:
                     self.general_interrogation()
                 except Iec101Error:
                     return
-                algo = "兼容(KW-2200)" if self._cs_compat else "标准"
-                self._log(f"已发送总召唤（第 {attempt}/3 次，校验和：{algo}），等待从站上送数据")
+                tag = f"DIR={'带' if use_dir else '不带'}，校验和={'兼容' if use_cs else '标准'}"
+                self._log(f"已发送总召唤（第 {attempt}/3 次，{tag}），等待从站上送数据")
                 end = time.time() + 2.0
                 got = False
                 while self._connected and time.time() < end:
@@ -304,10 +309,12 @@ class Iec101Master:
                         break
                     time.sleep(0.05)
                 if got:
-                    self._log(f"从站已响应（校验和采用：{algo}）")
+                    self._log(f"从站已响应，已采用：{tag}")
                     return
-                self._cs_compat = not self._cs_compat   # 换一种校验和算法再试
-            self._log("总召唤 3 次未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
+            # 三种组合都无响应：恢复用户设置
+            self._dir_override = None
+            self._cs_compat = bool(getattr(p, "cs_compat", True))
+            self._log("总召唤 3 种报文组合均未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
         else:
             self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
 
@@ -347,11 +354,12 @@ class Iec101Master:
         """发送 ASDU：非平衡=用户数据(FC=3)等 ACK；平衡=用户数据(DIR=1)等确认。"""
         assert self._params
         p = self._params
-        if p.balanced and p.data_frame_dir:
+        use_dir = bool(p.data_frame_dir) if self._dir_override is None else bool(self._dir_override)
+        if p.balanced and use_dir:
             ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, self._next_fcb(), True)
             note = note or "用户数据(平衡)"
         else:
-            # 现场抓包(KW-2200)：主站用户数据帧不带 DIR -> 0x73/0x53（PRM|FCB|FCV|FC=3）
+            # 现场抓包(KW-2200)：控制 0xF3/0xD3（PRM|FCB|FCV|FC=3）或 0x73/0x53(不带 DIR)
             ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), True)
             note = note or "用户数据(FC=3)"
         frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size, cs_compat=self._cs_compat)

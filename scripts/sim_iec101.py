@@ -236,7 +236,7 @@ def run(unbalanced: bool):
     m = Iec101Master(on_event=events.append)
     m.session_id = "sim"
     p = SerialParams(port="FAKE", baudrate=9600, parity="E", link_addr=ADDR,
-                     addr_size=ADDR_SIZE, balanced=not unbalanced,
+                     addr_size=ADDR_SIZE, balanced=not unbalanced, data_frame_dir=True,
                      poll_period=0.2, resp_timeout=1.0, common_address=CA)
     m.connect(p)
 
@@ -310,9 +310,9 @@ def run(unbalanced: bool):
         check(any(h == "10 8B 01 00 8C 16" for h in raw),
               "master answers slave-originated link-status request with link busy (10 8B 01 00 8C 16)",
               str([h for h in raw if h.startswith("10 8")][:2]))
-    want_c = ("73", "53")   # 现场 KW-2200：用户数据帧不带 DIR（平衡/非平衡均如此）
+    want_c = ("F3", "D3") if not unbalanced else ("73", "53")   # 平衡带 DIR；非平衡用 PRM 帧
     check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
-          "frame format: user-data control byte = 0x73/0x53 (no DIR)",
+          f"frame format: user-data control byte = 0x{want_c[0]}/0x{want_c[1]}",
           str([h[:23] for h in raw if h.startswith("68")][:2]))
     # 校验和：现场算法(标准^0x80)与标准算法都应被接受
     var = [f for f in sim.rx_frames if f and f[0] == 0x68]
@@ -383,23 +383,23 @@ def run_no_slave_response():
 
 
 def run_dir_variant():
-    """Optional style: balanced master that DOES set DIR in user-data frames."""
-    print("\n=== balanced with DIR in user-data frames ===")
+    """Optional style: user-data frames WITHOUT DIR (control 0x73/0x53)."""
+    print("\n=== balanced without DIR in user-data frames ===")
     sim = SlaveSim(balanced=True, acd=False, single_char_ack=True)
     install_fake_serial(sim)
     m = Iec101Master(on_event=lambda _e: None)
-    m.session_id = "dirdata"
+    m.session_id = "nodir"
     p = SerialParams(port="FAKE", link_addr=ADDR, addr_size=ADDR_SIZE, balanced=True,
-                     data_frame_dir=True, resp_timeout=1.0)
+                     data_frame_dir=False, resp_timeout=1.0)
     m.connect(p)
     check(wait_for(lambda: any(link.parse_frame(f, ADDR_SIZE)["kind"] == "fixed"
                                and link.parse_frame(f, ADDR_SIZE)["fc"] == link.FC_REQ_LINK_STATUS
                                for f in sim.rx_frames), 3.0), "link init done")
     m.clock_sync()
     raw = [f.hex(" ").upper() for f in sim.rx_frames]
-    check(wait_for(lambda: any(len(h.split(" ")) > 6 and h.split(" ")[4] in ("F3", "D3")
+    check(wait_for(lambda: any(len(h.split(" ")) > 6 and h.split(" ")[4] in ("73", "53")
                                for h in raw if h.startswith("68")), 3.0),
-          "user-data control byte = 0xF3/0xD3 when DIR enabled",
+          "user-data control byte = 0x73/0x53 when DIR disabled",
           str([h[:23] for h in raw if h.startswith("68")][:2]))
     m.disconnect()
 

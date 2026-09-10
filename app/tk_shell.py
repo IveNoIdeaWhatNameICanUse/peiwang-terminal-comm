@@ -311,7 +311,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         ack_var = gv("link_ack_timeout", 10.0)
         ioa_var2 = gv("ioa_size_101", 2)
         bal_var2 = tk.BooleanVar(value=bool(sess.get("balanced", False)))
-        dfdir_var2 = tk.BooleanVar(value=bool(sess.get("data_frame_dir", False)))
+        dfdir_var2 = tk.BooleanVar(value=bool(sess.get("data_frame_dir", True)))
         cscompat_var2 = tk.BooleanVar(value=bool(sess.get("cs_compat", True)))
 
         ttk.Label(dlg, text="101 串口 / 链路（保存后重新连接生效）", font=("", 10, "bold")).grid(
@@ -355,7 +355,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         ttk.Checkbutton(dlg, text="平衡方式（不勾选=非平衡周期轮询）", variable=bal_var2).grid(
             row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 0)
         )
-        ttk.Checkbutton(dlg, text="用户数据帧带 DIR 位（默认不勾，与 KW-2200 现场一致）",
+        ttk.Checkbutton(dlg, text="用户数据帧带 DIR 位（现场 KW-2200 为勾选：控制位 0xF3/0xD3）",
                         variable=dfdir_var2).grid(
             row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
         )

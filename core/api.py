@@ -658,7 +658,7 @@ class ApiBridge:
                     link_addr=_la,
                     addr_size=_as,
                     balanced=bool(getattr(s, "balanced", False)),
-                    data_frame_dir=bool(getattr(s, "data_frame_dir", False)),
+                    data_frame_dir=bool(getattr(s, "data_frame_dir", True)),
                     cs_compat=bool(getattr(s, "cs_compat", True)),
                     poll_period=float(getattr(s, "poll_period", 1.0) or 1.0),
                     resp_timeout=float(getattr(s, "link_ack_timeout", 10.0) or 10.0),
