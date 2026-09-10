@@ -88,6 +88,9 @@ class ApiBridge:
         self._ui_push: Optional[Callable[[dict], None]] = None
         self._frames: List[dict] = []
         self._lock = threading.Lock()
+        # 101 会话自动落盘：连接期间的收发报文写入桌面文件，便于现场取证
+        self._auto_logs: Dict[str, List[str]] = {}
+        self._auto_names: Dict[str, str] = {}
         default_cfg = root / "configs" / "default.json"
         if not default_cfg.exists() and getattr(sys, "frozen", False):
             # 打包运行：exe 目录无配置时回退到包内默认（_MEIPASS），保存仍写 exe 目录
@@ -119,6 +122,38 @@ class ApiBridge:
             self._event_logs[sid] = EventLog()
         return self._event_logs[sid]
 
+    def _auto_log_target(self, name: str) -> Path:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        base = Path.home() / "Desktop"
+        if not base.exists():
+            base = Path.home()
+        safe = "".join(ch for ch in str(name) if ch not in '\\/:*?"<>|') or "session"
+        return base / f"配网终端通讯_101报文_{safe}_{stamp}.txt"
+
+    @staticmethod
+    def _fmt_auto_log(event: dict) -> str:
+        ts = float(event.get("ts") or time.time())
+        t = time.strftime("%H:%M:%S", time.localtime(ts)) + f".{int((ts % 1) * 1000):03d}"
+        if event.get("type") == "frame":
+            return f"[{t}] {event.get('direction', '')} {event.get('note', '')}\n    {event.get('hex', '')}"
+        return f"[{t}] === {event.get('text', '')}"
+
+    def _flush_auto_log(self, sid: str) -> None:
+        buf = self._auto_logs.pop(sid, None)
+        name = self._auto_names.pop(sid, sid)
+        if not buf:
+            return
+        try:
+            path = self._auto_log_target(name)
+            head = (f"# 101 会话报文记录\n# 会话：{name}\n"
+                    f"# 导出时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"# 共 {len(buf)} 条\n\n")
+            path.write_text(head + "\n".join(buf) + "\n", encoding="utf-8")
+            self._push({"type": "log", "session_id": sid, "ts": time.time(),
+                        "text": f"本次 101 报文已自动保存：{path}"})
+        except Exception:
+            pass
+
     def _on_master_event(self, event: dict) -> None:
         if event.get("type") == "connection":
             sid = str(event.get("session_id") or self.store.config.active_session_id)
@@ -127,9 +162,18 @@ class ApiBridge:
                 self._init_pending[sid] = True
                 self._init_since[sid] = time.time()
                 self._event_log(sid).on_link("start")
+                sess = next((s for s in self.store.config.sessions if s.id == sid), None)
+                if sess is not None and getattr(sess, "protocol", "104") == "101":
+                    self._auto_logs[sid] = []          # 开始记录本次 101 通信
+                    self._auto_names[sid] = sess.name or sid
             elif st == "disconnected":
                 self._init_pending.pop(sid, None)
                 self._event_log(sid).on_link("stop")
+                self._flush_auto_log(sid)              # 断开时写盘
+        if event.get("type") in ("frame", "log"):
+            sid_a = str(event.get("session_id") or self.store.config.active_session_id)
+            if sid_a in self._auto_logs and len(self._auto_logs[sid_a]) < 20000:
+                self._auto_logs[sid_a].append(self._fmt_auto_log(event))
         if event.get("type") == "frame":
             with self._lock:
                 self._frames.append(event)

@@ -1414,15 +1414,19 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         )
 
         def export_monitor():
-            """导出当前主站报文监视内容到文本文件。"""
+            """导出当前主站报文监视内容到文本文件（默认存到桌面）。"""
             m = monitors.get(sid)
             if not m:
                 return
             content = m["text"].get("1.0", tk.END)
+            base = Path.home() / "Desktop"
+            if not base.exists():
+                base = Path.home()
             path = filedialog.asksaveasfilename(
                 title="导出当前主站报文",
                 defaultextension=".txt",
-                initialfile=f"报文-{session_name(sid)}.txt",
+                initialdir=str(base),
+                initialfile=f"配网终端通讯_报文_{session_name(sid)}_{time.strftime('%Y%m%d_%H%M%S')}.txt",
                 filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
             )
             if not path:
@@ -1430,6 +1434,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             try:
                 Path(path).write_text(content, encoding="utf-8")
                 m["status"].config(text="已导出")
+                messagebox.showinfo("已导出", f"报文已保存到：\n{path}", parent=win)
             except OSError as e:
                 messagebox.showerror("导出失败", str(e), parent=win)
 

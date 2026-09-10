@@ -290,16 +290,8 @@ class Iec101Master:
             return
         if ok:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
-            # 按现场时序：等从站上送“初始化结束”(M_EI_NA_1)，最多 8 秒；未收到也继续
-            deadline = time.time() + 8.0
-            while self._connected and time.time() < deadline and not self._saw_init_end:
-                time.sleep(0.05)
-            if self._saw_init_end:
-                self._log("已收到从站初始化结束(M_EI_NA_1)，开始总召唤")
-            else:
-                self._log("8s 内未收到从站初始化结束(M_EI_NA_1)：从站可能未就绪或已完成初始化，仍发送总召唤")
-            self._log(f"握手统计：从站主动帧(49/40 等) {self._peer_active_frames} 次，"
-                      f"初始化结束={'已收到' if self._saw_init_end else '未收到'}")
+            # 与 KW-2200 现场时序一致：链路建立后约 0.5s 即发总召唤
+            time.sleep(0.5)
             # 以现场组合(DIR=带 + 校验和兼容，= KW-2200 报文)为主重试，最后两种为兜底
             combos = [(True, True), (True, True), (True, True), (True, False), (False, True)]
             for attempt, (use_dir, use_cs) in enumerate(combos, 1):
@@ -313,7 +305,9 @@ class Iec101Master:
                 except Iec101Error:
                     return
                 tag = f"DIR={'带' if use_dir else '不带'}，校验和={'兼容' if use_cs else '标准'}"
-                self._log(f"已发送总召唤（第 {attempt}/{len(combos)} 次，{tag}）")
+                self._log(f"已发送总召唤（第 {attempt}/{len(combos)} 次，{tag}）；"
+                          f"握手：从站主动帧 {self._peer_active_frames} 次，"
+                          f"初始化结束={'已收到' if self._saw_init_end else '未收到'}")
                 end = time.time() + 2.5
                 got = False
                 while self._connected and time.time() < end:
@@ -407,7 +401,11 @@ class Iec101Master:
                 continue
             self._last_rx = time.time()
             _as = self._params.addr_size if self._params else 1
-            for frame in link.feed(self._buf, data, _as):
+            frames = list(link.feed(self._buf, data, _as))
+            if not frames and len(data) >= 5:
+                # 终端回了字节但组不成有效帧（长度/结束字/校验异常）——提示出来便于定位
+                self._log(f"收到 {len(data)} 字节但未组成有效帧：{codec104.hex_dump(data)}")
+            for frame in frames:
                 try:
                     self._handle_frame(frame)
                 except Exception:
