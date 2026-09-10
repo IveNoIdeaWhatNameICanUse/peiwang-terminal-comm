@@ -664,7 +664,8 @@ class ApiBridge:
                     cot_size=int(getattr(s, "cot_size", 2) or 2),
                     ca_size=int(getattr(s, "ca_size", 2) or 2),
                     ioa_size=int(getattr(s, "ioa_size_101", 2) or 2),
-                    tx_delay_ms=float(getattr(s, "tx_delay_ms", 0.0) or 0.0),
+                    # 现场（KW-2200）发送间隔 200ms；未配置时取 200
+                    tx_delay_ms=float(getattr(s, "tx_delay_ms", 0.0) or 0.0) or 200.0,
                 )
                 self._ensure_master(s.id).connect(sp)
                 return {"ok": True, "message": "串口连接成功", "session_id": s.id}

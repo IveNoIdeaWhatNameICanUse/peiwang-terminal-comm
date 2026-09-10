@@ -409,16 +409,18 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         add_row(8, "链路应答超时(秒)", ttk.Entry(dlg, textvariable=ack_var, width=14))
         add_row(9, "信息体地址长度(字节)", ttk.Combobox(dlg, textvariable=ioa_var2,
                                                        values=["2", "3"], width=6, state="readonly"))
+        txd_var2 = gv("tx_delay_ms", 200.0)
+        add_row(10, "发送间隔(毫秒)", ttk.Entry(dlg, textvariable=txd_var2, width=14))
         ttk.Checkbutton(dlg, text="平衡方式（不勾选=非平衡周期轮询）", variable=bal_var2).grid(
-            row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 0)
+            row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 0)
         )
         ttk.Checkbutton(dlg, text="用户数据帧带 DIR 位（默认不勾，与 KW-2200 现场一致）",
                         variable=dfdir_var2).grid(
-            row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
+            row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
         )
         ttk.Label(dlg, text="链路层确认最多等 1.5s（后台等待，不卡界面）；\n链路应答超时用于命令确认等待",
                   foreground="#666", justify=tk.LEFT).grid(
-            row=12, column=0, columnspan=2, sticky="w", padx=6
+            row=13, column=0, columnspan=2, sticky="w", padx=6
         )
 
         def save_params():
@@ -435,6 +437,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                     "ioa_size_101": int(ioa_var2.get() or 2),
                     "balanced": bool(bal_var2.get()),
                     "data_frame_dir": bool(dfdir_var2.get()),
+                    "tx_delay_ms": float(txd_var2.get() or 0),
                 }
                 api.update_session(sid, data)
             except ValueError as e:
@@ -445,7 +448,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             status.set(f"101 参数已保存（{data['serial_port']} {data['baudrate']}）")
 
         bt = ttk.Frame(dlg)
-        bt.grid(row=13, column=0, columnspan=2, pady=6)
+        bt.grid(row=14, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
 

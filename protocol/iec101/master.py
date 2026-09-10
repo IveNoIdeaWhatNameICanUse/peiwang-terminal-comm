@@ -280,12 +280,24 @@ class Iec101Master:
             return
         if ok:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
-            # 链路建立后自动总召唤一次，便于现场立即获得全量数据
-            try:
-                self.general_interrogation()
-                self._log("已自动发送总召唤，等待从站上送数据")
-            except Iec101Error:
-                pass
+            if self._ack_note == "链路忙":
+                time.sleep(0.5)          # 从站报“链路忙”：稍等再发数据
+            # 链路建立后自动总召唤；未得到任何响应则重试（最多 3 次）
+            for attempt in range(1, 4):
+                if not self._connected:
+                    return
+                before = self._last_rx
+                try:
+                    self.general_interrogation()
+                except Iec101Error:
+                    return
+                self._log(f"已发送总召唤（第 {attempt}/3 次），等待从站上送数据")
+                end = time.time() + 2.0
+                while self._connected and time.time() < end:
+                    if self._last_rx > before:
+                        return
+                    time.sleep(0.05)
+            self._log("总召唤 3 次未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
         else:
             self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
 
