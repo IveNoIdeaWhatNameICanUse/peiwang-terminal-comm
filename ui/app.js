@@ -69,7 +69,8 @@
     (r.sessions || []).forEach((s) => {
       const opt = document.createElement("option");
       opt.value = s.id;
-      opt.textContent = `${s.name} ${s.remote_ip}:${s.remote_port}${(r.session_connected || {})[s.id] ? " ●" : ""}`;
+      const addr = s.protocol === "101" ? `${s.serial_port}@${s.baudrate}` : `${s.remote_ip}:${s.remote_port}`;
+      opt.textContent = `${s.name} ${addr}${(r.session_connected || {})[s.id] ? " ●" : ""}`;
       sel.appendChild(opt);
     });
     if (cur) sel.value = cur;
@@ -88,6 +89,17 @@
     $("localPort").value = s.local_port || 0;
     $("ca").value = s.common_address || 1;
     $("oa").value = s.originator || 0;
+    $("protocolSel").value = s.protocol || "104";
+    $("serialPort").dataset.saved = s.serial_port || "COM1";
+    $("baudrate").value = s.baudrate || 9600;
+    $("serialParity").value = s.serial_parity || "E";
+    $("stopbits").value = String(s.stopbits || 1);
+    $("linkAddr").value = s.link_addr || 1;
+    $("ioa101").value = String(s.ioa_size_101 || 2);
+    $("pollPeriod").value = s.poll_period || 1.0;
+    $("balanced").checked = !!s.balanced;
+    await refreshSerialPorts(s.serial_port || "");
+    $("serialParams").style.display = ($("protocolSel").value === "101") ? "" : "none";
     $("variantSel").value = p.protocol_variant || "广西";
     await refreshNics(s.local_ip || "");
     if (s.local_ip) $("localIp").value = s.local_ip;
@@ -97,13 +109,43 @@
   function collectParams() {
     return {
       name: $("sessionName").value.trim(),
+      protocol: $("protocolSel").value,
       remote_ip: $("remoteIp").value.trim(),
       remote_port: Number($("remotePort").value || 2404),
       local_ip: $("localIp").value.trim(),
       local_port: Number($("localPort").value || 0),
       common_address: Number($("ca").value || 1),
       originator: Number($("oa").value || 0),
+      serial_port: $("serialPort").value || (($("serialPort").dataset.saved) || "COM1"),
+      baudrate: Number($("baudrate").value || 9600),
+      serial_parity: $("serialParity").value,
+      stopbits: Number($("stopbits").value || 1),
+      link_addr: Number($("linkAddr").value || 1),
+      ioa_size_101: Number($("ioa101").value || 2),
+      poll_period: Number($("pollPeriod").value || 1.0),
+      balanced: $("balanced").checked,
     };
+  }
+
+  async function refreshSerialPorts(selected) {
+    const sel = $("serialPort");
+    const cur = selected || sel.dataset.saved || sel.value || "COM1";
+    const ports = await api("list_serial_ports");
+    sel.innerHTML = "";
+    (ports || []).forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.port;
+      opt.textContent = `${p.port}${p.desc && p.desc !== p.port ? " (" + p.desc + ")" : ""}`;
+      sel.appendChild(opt);
+    });
+    if (!sel.options.length) {
+      const opt = document.createElement("option");
+      opt.value = cur || "COM1";
+      opt.textContent = cur || "COM1";
+      sel.appendChild(opt);
+    }
+    sel.value = Array.from(sel.options).some((o) => o.value === cur) ? cur : sel.options[0].value;
+    sel.dataset.saved = sel.value;
   }
 
   async function refreshNics(selected) {
@@ -303,6 +345,11 @@
     $("btnDisconnect").onclick = async () => { await api("disconnect", curSid); setConnected(false); };
     $("btnDisconnectAll").onclick = async () => { await api("disconnect_all"); setConnected(false); };
     $("btnRefreshNic").onclick = () => refreshNics();
+    $("btnRefreshSerial").onclick = () => refreshSerialPorts();
+    $("protocolSel").onchange = () => {
+      $("serialParams").style.display = ($("protocolSel").value === "101") ? "" : "none";
+      if ($("protocolSel").value === "101") refreshSerialPorts();
+    };
     $("btnSave").onclick = async () => {
       const r = await api("save_project", await api("get_project"), "");
       if (!r.ok) await appAlert("保存失败", r.error || "");

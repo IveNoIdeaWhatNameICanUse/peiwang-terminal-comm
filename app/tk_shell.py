@@ -41,6 +41,15 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ca = tk.StringVar(value="1")
     oa = tk.StringVar(value="0")
     status = tk.StringVar(value="未连接")
+    proto_var = tk.StringVar(value="104")
+    sport_var = tk.StringVar(value="COM1")
+    baud_var = tk.StringVar(value="9600")
+    parity_var = tk.StringVar(value="E")
+    stopbits_var = tk.StringVar(value="1")
+    linkaddr_var = tk.StringVar(value="1")
+    balanced_var = tk.BooleanVar(value=False)
+    poll_var = tk.StringVar(value="1.0")
+    ioa101_var = tk.StringVar(value="2")
     _session_ids: list[str] = []
     _loading = {"flag": False}
 
@@ -68,7 +77,11 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             _session_ids.append(sid)
             mark = "●" if connected.get(sid) else "○"
             act = " [当前]" if sid == active else ""
-            session_list.insert(tk.END, f"{mark} {s.get('name', sid)}  {s.get('remote_ip')}:{s.get('remote_port')}{act}")
+            if str(s.get("protocol") or "104") == "101":
+                addr = f"{s.get('serial_port')}@{s.get('baudrate')}"
+            else:
+                addr = f"{s.get('remote_ip')}:{s.get('remote_port')}"
+            session_list.insert(tk.END, f"{mark} {s.get('name', sid)}  {addr}{act}")
             if select_id and sid == select_id:
                 select_idx = i
             elif not select_id and sid == active:
@@ -96,6 +109,19 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             local_port.set(str(lp) if lp else "")
             ca.set(str(s.get("common_address") or 1))
             oa.set(str(s.get("originator") or 0))
+            proto_var.set(str(s.get("protocol") or "104"))
+            sport_var.set(str(s.get("serial_port") or "COM1"))
+            baud_var.set(str(s.get("baudrate") or 9600))
+            parity_var.set(str(s.get("serial_parity") or "E"))
+            stopbits_var.set(str(s.get("stopbits") or 1))
+            linkaddr_var.set(str(s.get("link_addr") or 1))
+            balanced_var.set(bool(s.get("balanced", False)))
+            poll_var.set(str(s.get("poll_period") or 1.0))
+            ioa101_var.set(str(s.get("ioa_size_101") or 2))
+            try:
+                on_proto_change()
+            except Exception:
+                pass
             connected = (api.list_sessions().get("session_connected") or {}).get(sid)
             status.set("已连接" if connected else "未连接")
             break
@@ -115,6 +141,15 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 "local_port": int(lp) if lp else 0,
                 "common_address": int(ca.get() or 1),
                 "originator": int(oa.get() or 0),
+                "protocol": proto_var.get(),
+                "serial_port": sport_var.get().strip() or "COM1",
+                "baudrate": int(baud_var.get() or 9600),
+                "serial_parity": parity_var.get() or "E",
+                "stopbits": int(stopbits_var.get() or 1),
+                "link_addr": int(linkaddr_var.get() or 1),
+                "balanced": bool(balanced_var.get()),
+                "poll_period": float(poll_var.get() or 1.0),
+                "ioa_size_101": int(ioa101_var.get() or 2),
             },
         )
         api.set_active_session(sid)
@@ -198,6 +233,76 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ttk.Label(conn, text="起源地址(OA)").grid(row=2, column=2)
     ttk.Entry(conn, textvariable=oa, width=8).grid(row=2, column=3, sticky="w", padx=4)
     ttk.Label(conn, textvariable=status).grid(row=2, column=4, columnspan=2, sticky="e")
+
+    # ---- 协议选择：104(TCP) / 101(串口,平衡/非平衡) ----
+    ttk.Label(conn, text="协议").grid(row=0, column=6, sticky="w", padx=(10, 0))
+    proto_combo = ttk.Combobox(conn, textvariable=proto_var, values=["104", "101"],
+                               width=6, state="readonly")
+    proto_combo.grid(row=0, column=7, sticky="w", padx=4)
+
+    ttk.Label(conn, text="(101) 串口").grid(row=3, column=0, sticky="w")
+    sport_combo = ttk.Combobox(conn, textvariable=sport_var, width=10)
+    sport_combo.grid(row=3, column=1, sticky="w", padx=4)
+    ttk.Label(conn, text="波特率").grid(row=3, column=2)
+    baud_combo = ttk.Combobox(conn, textvariable=baud_var, width=8,
+                              values=["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"])
+    baud_combo.grid(row=3, column=3, sticky="w", padx=4)
+    ttk.Label(conn, text="校验").grid(row=3, column=4)
+    parity_combo = ttk.Combobox(conn, textvariable=parity_var, values=["N", "E", "O"],
+                                width=4, state="readonly")
+    parity_combo.grid(row=3, column=5, sticky="w", padx=4)
+
+    ttk.Label(conn, text="停止位").grid(row=4, column=0, sticky="w")
+    stop_combo = ttk.Combobox(conn, textvariable=stopbits_var, values=["1", "2"],
+                              width=4, state="readonly")
+    stop_combo.grid(row=4, column=1, sticky="w", padx=4)
+    ttk.Label(conn, text="链路地址").grid(row=4, column=2)
+    linkaddr_entry = ttk.Entry(conn, textvariable=linkaddr_var, width=6)
+    linkaddr_entry.grid(row=4, column=3, sticky="w", padx=4)
+    chk_bal = ttk.Checkbutton(conn, text="平衡方式", variable=balanced_var)
+    chk_bal.grid(row=4, column=4, sticky="w")
+    ttk.Label(conn, text="轮询周期(s)").grid(row=4, column=5, sticky="e", padx=(0, 2))
+    poll_entry = ttk.Entry(conn, textvariable=poll_var, width=6)
+    poll_entry.grid(row=4, column=6, sticky="w")
+    btn_sport = ttk.Button(conn, text="刷新串口", command=lambda: refresh_serial_ports())
+    btn_sport.grid(row=4, column=7, sticky="w", padx=4)
+
+    ttk.Label(conn, text="信息体地址长度").grid(row=5, column=0, sticky="w")
+    ioa101_combo = ttk.Combobox(conn, textvariable=ioa101_var, values=["2", "3"],
+                                width=4, state="readonly")
+    ioa101_combo.grid(row=5, column=1, sticky="w", padx=4)
+    ttk.Label(conn, text="（101 默认 2 字节，部分厂家用 3）").grid(
+        row=5, column=2, columnspan=4, sticky="w")
+
+    net_widgets = [local_combo]
+    ser_widgets = [sport_combo, baud_combo, parity_combo, stop_combo, linkaddr_entry, chk_bal,
+                   poll_entry, btn_sport, ioa101_combo]
+
+    def on_proto_change():
+        is101 = proto_var.get() == "101"
+        for w in net_widgets:
+            try:
+                w.configure(state="normal" if not is101 else "disabled")
+            except tk.TclError:
+                pass
+        for w in ser_widgets:
+            try:
+                w.configure(state="disabled" if not is101 else "normal")
+            except tk.TclError:
+                pass
+        proto_combo.configure(state="readonly")
+
+    proto_combo.bind("<<ComboboxSelected>>", lambda _e: on_proto_change())
+
+    def refresh_serial_ports():
+        ports = api.list_serial_ports() or []
+        values = [p.get("port") for p in ports if p.get("port")]
+        if values:
+            sport_combo["values"] = values
+            if sport_var.get() not in values:
+                sport_var.set(values[0])
+
+    on_proto_change()  # 初始按默认协议(104)禁用/启用
 
     def refresh_nics():
         nics = api.get_nics()

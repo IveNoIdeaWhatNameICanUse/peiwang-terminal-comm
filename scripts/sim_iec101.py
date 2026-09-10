@@ -1,0 +1,290 @@
+# -*- coding: utf-8 -*-
+"""Offline test for IEC 60870-5-101 master (unbalanced + balanced).
+
+Runs the real Iec101Master against a minimal in-memory slave, wired through a
+fake serial port, so no hardware / COM port is required.
+
+Usage:  python scripts/sim_iec101.py
+"""
+from __future__ import annotations
+
+import os
+import struct
+import sys
+import time
+import types
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from protocol.iec101 import link                       # noqa: E402
+from protocol.iec101.master import Iec101Master, SerialParams  # noqa: E402
+from protocol.iec104 import codec as codec104          # noqa: E402
+
+ADDR = 1
+ADDR_SIZE = 1
+
+
+# ---------------------------------------------------------------- ASDU bytes
+def mk_asdu(type_id, cot, ca, objs, count=None):
+    """ASDU header + object bytes (SQ=0)."""
+    n = count if count is not None else (1 if objs else 0)
+    return bytes([type_id, n & 0x7F]) + struct.pack("<H", cot) + struct.pack("<H", ca) + objs
+
+
+def sp_objects(pairs):
+    """M_SP_NA_1 body: IOA(2) + SIQ(1) per point."""
+    b = b""
+    for ioa, on in pairs:
+        b += struct.pack("<H", ioa) + bytes([0x01 if on else 0x00])
+    return b
+
+
+def me_nc_objects(pairs):
+    """M_ME_NC_1 body: IOA(2) + IEEE754 float + QDS."""
+    b = b""
+    for ioa, val in pairs:
+        b += struct.pack("<H", ioa) + struct.pack(">f", float(val)) + b"\x00"
+    return b
+
+
+def sp_tb_objects(pairs):
+    """M_SP_TB_1 (SOE) body: IOA(2) + SIQ(1) + CP56Time2a(7)."""
+    b = b""
+    for ioa, on in pairs:
+        cp56 = struct.pack("<H", 12345) + bytes([0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00])
+        b += struct.pack("<H", ioa) + bytes([0x01 if on else 0x00]) + cp56
+    return b
+
+
+CA = 1
+GI_CONF = mk_asdu(100, 7, CA, b"")                                  # 总召唤激活确认
+GI_DATA_SP = mk_asdu(1, 20, CA, sp_objects([(1, True), (2, False)]), count=2)
+GI_DATA_ME = mk_asdu(13, 20, CA, me_nc_objects([(1001, 220.5)]))
+GI_END = mk_asdu(100, 10, CA, b"")                                  # 激活终止
+SPONT_ME = mk_asdu(13, 3, CA, me_nc_objects([(1001, 12.34)]))
+SOE_SP = mk_asdu(30, 3, CA, sp_tb_objects([(5, True)]))
+
+
+# ---------------------------------------------------------------- fake serial
+class SlaveSim:
+    """Minimal unbalanced/balanced 101 slave."""
+
+    def __init__(self, balanced=False, acd=False):
+        self.balanced = balanced
+        self.buf = bytearray()
+        self.out = bytearray()
+        self.pending = []
+        self.fc_rx = []          # primary frames received
+        self.ack_rx = []         # secondary-direction frames received
+        self.rx_asdus = []
+        self.acd = acd          # access demand flag reported in link-status response
+        self.interrogated = False
+
+    def emit(self, frame):
+        self.out += frame
+
+    def feed(self, data):
+        for frame in link.feed(self.buf, data, ADDR_SIZE):
+            info = link.parse_frame(frame, ADDR_SIZE)
+            try:
+                self.handle(info)
+            except Exception as e:  # pragma: no cover
+                print("  slave error:", e)
+
+    def handle(self, info):
+        if info["kind"] == "fixed":
+            if not self.balanced and not info["prm"]:
+                self.ack_rx.append(info["fc"])
+                return
+            fc = info["fc"]
+            self.fc_rx.append(fc)
+            if fc == link.FC_RESET_LINK:
+                self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK), ADDR, ADDR_SIZE))
+            elif fc == link.FC_REQ_LINK_STATUS:
+                self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK, self.acd), ADDR, ADDR_SIZE))
+            elif fc in (link.FC_REQ_LEVEL1, link.FC_REQ_LEVEL2):
+                self.serve_poll()
+            return
+        if info["kind"] == "variable":
+            if self.balanced:
+                self.emit(link.build_fixed(link.ctrl_balanced(link.FC_USER_DATA_CONF, False), ADDR, ADDR_SIZE))
+            else:
+                self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK), ADDR, ADDR_SIZE))
+            try:
+                parsed = codec104.decode_asdu(info["asdu"], cot_size=2, ca_size=2, ioa_size=2)
+            except Exception:
+                return
+            self.rx_asdus.append(parsed)
+            if parsed.type_id == 100 and parsed.cot == 6:
+                self.interrogated = True
+                self.pending.extend([GI_CONF, GI_DATA_SP, GI_DATA_ME, GI_END])
+                if self.balanced:
+                    while self.pending:
+                        self.serve_poll()
+
+    def serve_poll(self):
+        if not self.pending:
+            self.emit(link.build_fixed(link.ctrl_secondary(link.FC_NO_DATA), ADDR, ADDR_SIZE))
+            return
+        asdu = self.pending.pop(0)
+        ctrl = link.ctrl_balanced(link.FC_DATA, False) if self.balanced \
+            else link.ctrl_secondary(link.FC_DATA)
+        self.emit(link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE))
+
+
+class LoopSerial:
+    def __init__(self, sim, **kw):
+        self.sim = sim
+        self.closed = False
+
+    def write(self, data):
+        self.sim.feed(bytes(data))
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def read(self, n=1):
+        out = self.sim.out
+        if out:
+            chunk = bytes(out[:n])
+            del out[:n]
+            return chunk
+        time.sleep(0.02)
+        return b""
+
+    @property
+    def in_waiting(self):
+        return len(self.sim.out)
+
+    def close(self):
+        self.closed = True
+
+
+def install_fake_serial(sim):
+    fake = types.ModuleType("serial")
+    fake.Serial = lambda **kw: LoopSerial(sim, **kw)
+    sys.modules["serial"] = fake
+
+
+# ---------------------------------------------------------------- test helpers
+FAILS = []
+
+
+def check(cond, label, extra=""):
+    print(("  OK   " if cond else "  FAIL ") + label + (f"  {extra}" if extra else ""))
+    if not cond:
+        FAILS.append(label)
+
+
+def wait_for(pred, timeout=3.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return pred()
+
+
+def run(unbalanced: bool):
+    print("\n=== %s mode ===" % ("unbalanced" if unbalanced else "balanced"))
+    sim = SlaveSim(balanced=not unbalanced, acd=True)
+    install_fake_serial(sim)
+    events = []
+    m = Iec101Master(on_event=events.append)
+    m.session_id = "sim"
+    p = SerialParams(port="FAKE", baudrate=9600, parity="E", link_addr=ADDR,
+                     addr_size=ADDR_SIZE, balanced=not unbalanced,
+                     poll_period=0.2, resp_timeout=1.0, common_address=CA)
+    m.connect(p)
+
+    check(m.connected, "connection established (fake serial)")
+    check(wait_for(lambda: link.FC_RESET_LINK in sim.fc_rx, 1.5), "reset link (FC=0) sent")
+    check(wait_for(lambda: link.FC_REQ_LINK_STATUS in sim.fc_rx, 1.5), "request link status (FC=9) sent")
+
+    if unbalanced:
+        check(wait_for(lambda: (link.FC_REQ_LEVEL2 in sim.fc_rx), 2.0), "cyclic level-2 poll observed")
+        check(wait_for(lambda: (link.FC_REQ_LEVEL1 in sim.fc_rx), 4.0),
+              "level-1 poll after ACD=1", "slave set ACD=1")
+
+    # spontaneous telemetry
+    sim.pending.append(SPONT_ME)
+    if not unbalanced:
+        sim.serve_poll()
+    got_me = wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 13 for e in events), 3.0)
+    check(got_me, "spontaneous M_ME_NC_1 delivered to points event")
+
+    # general interrogation
+    base = len([e for e in events if e.get("type") == "points"])
+    m.general_interrogation()
+    check(wait_for(lambda: sim.interrogated, 2.0), "slave received C_IC_NA_1 (COT=6)")
+    check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 1
+                               for e in events[base:]), 4.0), "GI single points delivered")
+    check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 13
+                               and e.get("cot") in (9, 10, 20) for e in events[base:]), 4.0),
+          "GI measured values delivered")
+    gi_end = wait_for(lambda: any(e.get("type") == "frame" and e.get("direction") == "RX"
+                                  and (e.get("asdu") or {}).get("type_id") == 100
+                                  and (e.get("asdu") or {}).get("cot") == 10 for e in events), 4.0)
+    check(gi_end, "GI activation termination (COT=10) received")
+
+    # commands
+    m.single_command(5, True, select=False)
+    check(wait_for(lambda: any(a.type_id == 45 and a.cot == 6 for a in sim.rx_asdus), 2.0),
+          "C_SC_NA_1 command written to slave")
+    m.clock_sync()
+    check(wait_for(lambda: any(a.type_id == 103 for a in sim.rx_asdus), 2.0),
+          "C_CS_NA_1 clock sync written to slave")
+
+    if not unbalanced:
+        # slave-initiated SOE in balanced mode
+        sim.emit(link.build_variable(link.ctrl_balanced(link.FC_DATA, False), ADDR, SOE_SP, ADDR_SIZE))
+        check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 30 for e in events), 3.0),
+              "SOE (M_SP_TB_1) pushed by slave")
+        check(wait_for(lambda: link.FC_USER_DATA_CONF in sim.fc_rx, 2.0),
+              "user-data confirmation (FC=4) returned to slave")
+
+    tx = [e for e in events if e.get("type") == "frame" and e.get("direction") == "TX"]
+    rx = [e for e in events if e.get("type") == "frame" and e.get("direction") == "RX"]
+    print("  frames: TX=%d RX=%d, slave got %d ASDUs" % (len(tx), len(rx), len(sim.rx_asdus)))
+    for a in sim.rx_asdus:
+        print("    slave RX: %s COT=%s" % (a.type_name, a.cot))
+    m.disconnect()
+    check(not m.connected, "disconnected cleanly")
+
+
+def run_link_roundtrip():
+    print("\n=== link layer round-trip ===")
+    for addr_size in (1, 2):
+        addr = 0x1234 if addr_size == 2 else 7
+        for ctrl, note in ((link.ctrl_primary(link.FC_USER_DATA, fcb=True, fcv=True), "primary FC=3"),
+                           (link.ctrl_secondary(link.FC_DATA, acd=True), "secondary FC=8"),
+                           (link.ctrl_balanced(link.FC_USER_DATA, True, True, True), "balanced FC=3")):
+            fixed = link.build_fixed(ctrl, addr, addr_size)
+            f2 = list(link.feed(bytearray(), fixed, addr_size))[0]
+            i2 = link.parse_frame(f2, addr_size)
+            ok = i2["ctrl"] == ctrl and i2["addr"] == addr and i2["kind"] == "fixed"
+            check(ok, f"{note} fixed frame addr_size={addr_size}",
+                  f"ctrl=0x{ctrl:02X} addr={addr} fc={i2['fc']}")
+        var = link.build_variable(link.ctrl_primary(link.FC_USER_DATA, True, True), addr, GI_CONF, addr_size)
+        fv = list(link.feed(bytearray(), var, addr_size))[0]
+        iv = link.parse_frame(fv, addr_size)
+        check(iv["asdu"] == GI_CONF and iv["addr"] == addr, f"variable frame addr_size={addr_size}")
+    # byte-by-byte reassembly
+    frame = link.build_variable(link.ctrl_primary(link.FC_USER_DATA), 1, GI_DATA_ME, 1)
+    buf = bytearray()
+    out = []
+    for b in frame:
+        out.extend(link.feed(buf, bytes([b]), 1))
+    check(len(out) == 1 and out[0] == frame, "byte-wise reassembly of variable frame")
+    check(list(link.feed(bytearray(), link.build_single(), 1))[0] == bytes([0xE5]), "single char E5 frame")
+
+
+if __name__ == "__main__":
+    run_link_roundtrip()
+    run(unbalanced=True)
+    run(unbalanced=False)
+    print("\n%s (%d failure%s)" % ("ALL PASSED" if not FAILS else "FAILURES: " + ", ".join(FAILS),
+                                  len(FAILS), "" if len(FAILS) == 1 else "s"))
+    sys.exit(1 if FAILS else 0)

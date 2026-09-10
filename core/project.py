@@ -67,6 +67,17 @@ class SessionDef:
     auto_reconnect: bool = True      # 超时断线重连
     tx_delay_ms: float = 0.0         # 发送延时(毫秒)
     setpoint_batch: int = 10         # 参数全召唤：单帧定值个数(1~127)
+    # ---- 101 串口参数 ----
+    protocol: str = "104"            # 104(TCP) / 101(串口,平衡/非平衡)
+    serial_port: str = "COM1"        # 串口号
+    baudrate: int = 9600             # 波特率
+    serial_parity: str = "E"         # 校验: N无 / E偶 / O奇
+    stopbits: int = 1                # 停止位
+    link_addr: int = 1               # 101 链路地址
+    addr_size: int = 1               # 链路地址长度(1/2 字节)
+    balanced: bool = False           # True=平衡方式, False=非平衡方式
+    poll_period: float = 1.0         # 非平衡轮询周期(秒)
+    ioa_size_101: int = 2            # 101 信息体地址长度(字节，国内常见 2)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -100,6 +111,16 @@ class SessionDef:
             auto_reconnect=bool(data.get("auto_reconnect", True)),
             tx_delay_ms=float(data.get("tx_delay_ms") or 0.0),
             setpoint_batch=int(data.get("setpoint_batch") or 10),
+            protocol=str(data.get("protocol") or "104"),
+            serial_port=str(data.get("serial_port") or "COM1"),
+            baudrate=int(data.get("baudrate") or 9600),
+            serial_parity=str(data.get("serial_parity") or "E"),
+            stopbits=int(data.get("stopbits") or 1),
+            link_addr=int(data.get("link_addr") or 1),
+            addr_size=int(data.get("addr_size") or 1),
+            balanced=bool(data.get("balanced", False)),
+            poll_period=float(data.get("poll_period") or 1.0),
+            ioa_size_101=int(data.get("ioa_size_101") or 2),
         )
 
 
@@ -331,8 +352,9 @@ class ProjectStore:
                     continue  # 控制/参数确认或整区对象：不自动建点
                 p = PointDef(
                     ioa=ioa,
-                    type_id=0,
+                    type_id=int(rt),
                     name=f"IOA-{ioa}",
+                    category=category_for_type(rt),
                     value=obj.get("value") if update_value else None,
                     quality=int(obj.get("quality") or 0),
                     data_type=int(extra["dtype"]) if extra.get("dtype") is not None else 0,

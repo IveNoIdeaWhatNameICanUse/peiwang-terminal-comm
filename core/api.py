@@ -14,6 +14,7 @@ from core.events import EventBus
 from core.eventlog import EventLog
 from core.project import PointDef, ProjectStore, SessionDef, category_for_type
 from net import nics_as_dicts
+from protocol.iec101 import Iec101Master, SerialParams
 from protocol.iec104 import ConnectParams, Iec104Master, MasterError, TYPE_NAMES
 
 
@@ -213,21 +214,48 @@ class ApiBridge:
             nm = "固化(整区)" if action == "exec" else "撤销(整区)"
         self._event_log(sid).on_adjust(int(ioa), nm or f"IOA-{ioa}", action, value)
 
-    def _ensure_master(self, sid: str) -> Iec104Master:
+    def _ensure_master(self, sid: str):
+        """按会话协议创建/复用主站实例(104 TCP / 101 串口)。"""
         if sid not in self._masters:
-            m = Iec104Master(on_event=self._on_master_event)
+            sess = next((s for s in self.store.config.sessions if s.id == sid), None)
+            proto = getattr(sess, "protocol", "104") if sess else "104"
+            if proto == "101":
+                m = Iec101Master(on_event=self._on_master_event)
+            else:
+                m = Iec104Master(on_event=self._on_master_event)
             m.session_id = sid
             self._masters[sid] = m
         return self._masters[sid]
 
-    def _active_master(self) -> Iec104Master:
+    def _active_master(self):
         sid = self.store.config.active_session().id
         return self._ensure_master(sid)
+
+    def _recreate_master(self, sid: str) -> None:
+        """协议/端口变更后重建主站实例(先断开旧连接)。"""
+        old = self._masters.pop(sid, None)
+        if old:
+            try:
+                old.disconnect()
+            except Exception:
+                pass
+        self._ensure_master(sid)
 
     # ---- exposed ----
 
     def get_nics(self) -> list:
         return nics_as_dicts()
+
+    def list_serial_ports(self) -> list:
+        """枚举本机串口（101 用）。"""
+        try:
+            from serial.tools import list_ports
+            return [
+                {"port": p.device, "desc": p.description or p.device}
+                for p in list_ports.comports()
+            ]
+        except Exception:
+            return []
 
     def get_type_names(self) -> dict:
         return {str(k): v for k, v in TYPE_NAMES.items()}
@@ -272,6 +300,7 @@ class ApiBridge:
             local_port=local_port,
             common_address=int(data.get("common_address") or 1),
             originator=int(data.get("originator") or 0),
+            protocol=str(data.get("protocol") or "104"),
         )
         self.store.config.sessions.append(s)
         # 新主站复制当前主站的点表作为初始模板（此后各自独立）
@@ -317,6 +346,33 @@ class ApiBridge:
                 s.auto_reconnect = bool(data["auto_reconnect"])
             if "setpoint_batch" in data:
                 s.setpoint_batch = max(1, min(int(data["setpoint_batch"] or 10), 127))
+            # 101 串口参数 / 协议类型
+            proto_changed = False
+            if "protocol" in data:
+                new_proto = str(data["protocol"] or "104")
+                if new_proto != getattr(s, "protocol", "104"):
+                    proto_changed = True
+                s.protocol = new_proto
+            if "serial_port" in data:
+                s.serial_port = str(data["serial_port"] or "COM1")
+            if "baudrate" in data:
+                s.baudrate = int(data["baudrate"] or 9600)
+            if "serial_parity" in data:
+                s.serial_parity = str(data["serial_parity"] or "E")
+            if "stopbits" in data:
+                s.stopbits = int(data["stopbits"] or 1)
+            if "link_addr" in data:
+                s.link_addr = int(data["link_addr"] or 1)
+            if "addr_size" in data:
+                s.addr_size = int(data["addr_size"] or 1)
+            if "ioa_size_101" in data:
+                s.ioa_size_101 = int(data["ioa_size_101"] or 2)
+            if "balanced" in data:
+                s.balanced = bool(data["balanced"])
+            if "poll_period" in data:
+                s.poll_period = float(data["poll_period"] or 1.0)
+            if proto_changed:
+                self._recreate_master(sid)
             if self.store.config.active_session_id == sid:
                 self.store.config._sync_legacy_from_active()
             return {"ok": True, "session": s.to_dict(), "project": self.get_project()}
@@ -576,12 +632,39 @@ class ApiBridge:
             return {"ok": False, "error": str(e)}
 
     def connect(self, params: Optional[dict] = None) -> dict:
-        """连接当前活动会话；params 若给出则先写回该会话。"""
+        """连接当前活动会话；params 若给出则先写回该会话。
+        会话 protocol=104 走 TCP；protocol=101 走串口(平衡/非平衡)。"""
         try:
             s = self.store.config.active_session()
             if params:
                 self.update_session(s.id, params)
                 s = self.store.config.active_session()
+            if getattr(s, "protocol", "104") == "101":
+                _la = int(s.link_addr or 1)
+                _as = int(getattr(s, "addr_size", 1) or 1)
+                if _la > 0xFFFF:
+                    return {"ok": False, "code": "BAD_LINK_ADDR", "error": "101 链路地址超范围(0~65535)"}
+                if _la > 0xFF and _as == 1:
+                    _as = 2  # 链路地址>255 自动用 2 字节
+                sp = SerialParams(
+                    port=s.serial_port,
+                    baudrate=int(s.baudrate or 9600),
+                    parity=str(s.serial_parity or "E"),
+                    stopbits=int(s.stopbits or 1),
+                    link_addr=_la,
+                    addr_size=_as,
+                    balanced=bool(getattr(s, "balanced", False)),
+                    poll_period=float(getattr(s, "poll_period", 1.0) or 1.0),
+                    resp_timeout=float(getattr(s, "link_ack_timeout", 10.0) or 10.0),
+                    common_address=s.common_address,
+                    originator=s.originator,
+                    cot_size=int(getattr(s, "cot_size", 2) or 2),
+                    ca_size=int(getattr(s, "ca_size", 2) or 2),
+                    ioa_size=int(getattr(s, "ioa_size_101", 2) or 2),
+                    tx_delay_ms=float(getattr(s, "tx_delay_ms", 0.0) or 0.0),
+                )
+                self._ensure_master(s.id).connect(sp)
+                return {"ok": True, "message": "串口连接成功", "session_id": s.id}
             # 多会话本地端口冲突检查
             if s.local_port:
                 for other in self.store.config.sessions:
