@@ -369,6 +369,8 @@ class ApiBridge:
                 s.ioa_size_101 = int(data["ioa_size_101"] or 2)
             if "data_frame_dir" in data:
                 s.data_frame_dir = bool(data["data_frame_dir"])
+            if "cs_compat" in data:
+                s.cs_compat = bool(data["cs_compat"])
             if "balanced" in data:
                 s.balanced = bool(data["balanced"])
             if "poll_period" in data:
@@ -657,6 +659,7 @@ class ApiBridge:
                     addr_size=_as,
                     balanced=bool(getattr(s, "balanced", False)),
                     data_frame_dir=bool(getattr(s, "data_frame_dir", False)),
+                    cs_compat=bool(getattr(s, "cs_compat", True)),
                     poll_period=float(getattr(s, "poll_period", 1.0) or 1.0),
                     resp_timeout=float(getattr(s, "link_ack_timeout", 10.0) or 10.0),
                     common_address=s.common_address,

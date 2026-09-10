@@ -52,6 +52,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ioa101_var = tk.StringVar(value="2")
     addr101_var = tk.StringVar(value="2")
     dfdir_var = tk.BooleanVar(value=False)
+    cscompat_var = tk.BooleanVar(value=True)
     _session_ids: list[str] = []
     _loading = {"flag": False}
 
@@ -122,6 +123,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             ioa101_var.set(str(s.get("ioa_size_101") or 2))
             addr101_var.set(str(s.get("addr_size") or 2))
             dfdir_var.set(bool(s.get("data_frame_dir", False)))
+            cscompat_var.set(bool(s.get("cs_compat", True)))
             try:
                 on_proto_change()
             except Exception:
@@ -156,6 +158,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 "ioa_size_101": int(ioa101_var.get() or 2),
                 "addr_size": int(addr101_var.get() or 2),
                 "data_frame_dir": bool(dfdir_var.get()),
+                "cs_compat": bool(cscompat_var.get()),
             },
         )
         api.set_active_session(sid)
@@ -285,10 +288,12 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         row=6, column=4, columnspan=2, sticky="w")
     chk_dfdir = ttk.Checkbutton(conn, text="数据帧带DIR", variable=dfdir_var)
     chk_dfdir.grid(row=6, column=6, columnspan=2, sticky="w")
+    chk_cs = ttk.Checkbutton(conn, text="校验和兼容(KW-2200)", variable=cscompat_var)
+    chk_cs.grid(row=7, column=6, columnspan=2, sticky="w")
 
     net_widgets = [local_combo]
     ser_widgets = [sport_combo, baud_combo, parity_combo, stop_combo, linkaddr_entry, chk_bal,
-                   poll_entry, btn_sport, ioa101_combo, addr101_combo, chk_dfdir]
+                   poll_entry, btn_sport, ioa101_combo, addr101_combo, chk_dfdir, chk_cs]
     params_btn = {"w": None}   # 稍后创建：按协议切换文案
 
     def on_proto_change():
@@ -384,6 +389,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         ioa_var2 = gv("ioa_size_101", 2)
         bal_var2 = tk.BooleanVar(value=bool(sess.get("balanced", False)))
         dfdir_var2 = tk.BooleanVar(value=bool(sess.get("data_frame_dir", False)))
+        cscompat_var2 = tk.BooleanVar(value=bool(sess.get("cs_compat", True)))
 
         ttk.Label(dlg, text="101 串口 / 链路（保存后重新连接生效）", font=("", 10, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 4)
@@ -418,9 +424,13 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                         variable=dfdir_var2).grid(
             row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
         )
+        ttk.Checkbutton(dlg, text="校验和兼容现场（可变帧控制位 bit7 取反，KW-2200 同规则）",
+                        variable=cscompat_var2).grid(
+            row=13, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
+        )
         ttk.Label(dlg, text="链路层确认最多等 1.5s（后台等待，不卡界面）；\n链路应答超时用于命令确认等待",
                   foreground="#666", justify=tk.LEFT).grid(
-            row=13, column=0, columnspan=2, sticky="w", padx=6
+            row=14, column=0, columnspan=2, sticky="w", padx=6
         )
 
         def save_params():
@@ -437,6 +447,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                     "ioa_size_101": int(ioa_var2.get() or 2),
                     "balanced": bool(bal_var2.get()),
                     "data_frame_dir": bool(dfdir_var2.get()),
+                    "cs_compat": bool(cscompat_var2.get()),
                     "tx_delay_ms": float(txd_var2.get() or 0),
                 }
                 api.update_session(sid, data)
@@ -448,7 +459,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             status.set(f"101 参数已保存（{data['serial_port']} {data['baudrate']}）")
 
         bt = ttk.Frame(dlg)
-        bt.grid(row=14, column=0, columnspan=2, pady=6)
+        bt.grid(row=15, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
 

@@ -77,6 +77,7 @@ class SessionDef:
     addr_size: int = 2               # 链路地址长度(1/2 字节，国内常见 2)
     balanced: bool = False           # True=平衡方式, False=非平衡方式
     data_frame_dir: bool = False     # 用户数据帧是否带 DIR 位(默认不带)
+    cs_compat: bool = True           # 可变帧校验和兼容现场(KW-2200)：控制位 bit7 取反
     poll_period: float = 1.0         # 非平衡轮询周期(秒)
     ioa_size_101: int = 2            # 101 信息体地址长度(字节，国内常见 2)
 
@@ -121,6 +122,7 @@ class SessionDef:
             addr_size=int(data.get("addr_size") or 2),
             balanced=bool(data.get("balanced", False)),
             data_frame_dir=bool(data.get("data_frame_dir", False)),
+            cs_compat=bool(data.get("cs_compat", True)),
             poll_period=float(data.get("poll_period") or 1.0),
             ioa_size_101=int(data.get("ioa_size_101") or 2),
         )

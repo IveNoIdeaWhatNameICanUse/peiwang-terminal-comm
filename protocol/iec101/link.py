@@ -79,18 +79,24 @@ def build_single() -> bytes:
     return bytes([SINGLE_CHAR])
 
 
-def build_variable(ctrl: int, addr: int, asdu: bytes, addr_size: int = 1) -> bytes:
+def build_variable(ctrl: int, addr: int, asdu: bytes, addr_size: int = 1,
+                   cs_compat: bool = False) -> bytes:
     """Variable frame: 68H | L | L | 68H | C | A | ASDU | CS | 16H.
 
     CS = 字节和(模 256)，从**第一个长度字节**起算到 ASDU 末尾，
-    不含前导 68H、不含 CS 本身与结束 16H（DL/T 634.5101 / IEC 60870-5-2）。
-    固定帧的校验同样是“控制+地址”之和，不含起始 10H。
+    不含前导 68H、不含 CS 与结束 16H（DL/T 634.5101 / IEC 60870-5-2）。
+
+    cs_compat=True 时额外把结果的 bit7 取反 —— 现场终端/KW-2200 的可变帧
+    校验和就是把控制字节的 DIR 位取反后求和得到的（固定帧仍用标准算法）。
     """
     a = int(addr).to_bytes(addr_size, "little")
     payload = bytes([ctrl]) + a + asdu
     length = len(payload)
     body = bytes([START_VAR, length, length, START_VAR]) + payload
-    return body + bytes([_cs(body[1:]), END_BYTE])
+    cs = _cs(body[1:])
+    if cs_compat:
+        cs ^= 0x80
+    return body + bytes([cs, END_BYTE])
 
 
 def feed(buf: bytearray, data: bytes, addr_size: int = 1):
@@ -137,7 +143,7 @@ def parse_frame(frame: bytes, addr_size: int = 1) -> dict:
     """Parse one FT1.2 frame -> {kind, ctrl, fc, addr, asdu, cs_ok}."""
     if frame == bytes([SINGLE_CHAR]):
         return {"kind": "single", "ctrl": 0, "fc": -1, "addr": 0, "asdu": b"", "cs_ok": True}
-    cs_ok = len(frame) >= 2 and frame[-2] == _cs(frame[1:-2])
+    cs_ok = len(frame) >= 2 and frame[-2] in (_cs(frame[1:-2]), _cs(frame[1:-2]) ^ 0x80)
     if frame[0] == START_FIXED:
         c = frame[1]
         addr = int.from_bytes(frame[2:2 + addr_size], "little")

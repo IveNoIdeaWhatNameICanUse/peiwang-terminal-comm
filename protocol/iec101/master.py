@@ -33,6 +33,7 @@ class SerialParams:
     addr_size: int = 1         # 链路地址长度(1/2 字节)
     balanced: bool = False     # True=平衡方式, False=非平衡方式
     data_frame_dir: bool = False  # 用户数据帧是否带 DIR 位(现场 KW-2200: 不带 -> 0x73/0x53)
+    cs_compat: bool = True        # 可变帧校验和兼容现场(KW-2200)：控制位 bit7 取反
     poll_period: float = 1.0   # 非平衡轮询周期(秒)
     resp_timeout: float = 5.0  # 等待应答超时(秒)
     common_address: int = 1
@@ -69,6 +70,7 @@ class Iec101Master:
         self._ack_event = threading.Event()
         self._ack_ok = False
         self._ack_note = ""            # 确认类型说明(如 链路忙)
+        self._cs_compat = True         # 可变帧校验和兼容现场(连接时取参数)
         self._acd = False              # 从站请求访问位
 
     # ---------- helpers ----------
@@ -125,6 +127,7 @@ class Iec101Master:
         except Exception as e:  # serial.SerialException 等
             raise Iec101Error("SERIAL_OPEN_FAILED", f"串口打开失败：{p.port} — {e}") from e
         self._params = p
+        self._cs_compat = bool(getattr(p, "cs_compat", True))
         self._buf.clear()
         self._stop.clear()
         self._fcb = False
@@ -282,7 +285,7 @@ class Iec101Master:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
             if self._ack_note == "链路忙":
                 time.sleep(0.5)          # 从站报“链路忙”：稍等再发数据
-            # 链路建立后自动总召唤；未得到任何响应则重试（最多 3 次）
+            # 链路建立后自动总召唤；未得到任何响应则切换校验和算法重试(最多 3 次)
             for attempt in range(1, 4):
                 if not self._connected:
                     return
@@ -291,12 +294,19 @@ class Iec101Master:
                     self.general_interrogation()
                 except Iec101Error:
                     return
-                self._log(f"已发送总召唤（第 {attempt}/3 次），等待从站上送数据")
+                algo = "兼容(KW-2200)" if self._cs_compat else "标准"
+                self._log(f"已发送总召唤（第 {attempt}/3 次，校验和：{algo}），等待从站上送数据")
                 end = time.time() + 2.0
+                got = False
                 while self._connected and time.time() < end:
                     if self._last_rx > before:
-                        return
+                        got = True
+                        break
                     time.sleep(0.05)
+                if got:
+                    self._log(f"从站已响应（校验和采用：{algo}）")
+                    return
+                self._cs_compat = not self._cs_compat   # 换一种校验和算法再试
             self._log("总召唤 3 次未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
         else:
             self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
@@ -344,7 +354,7 @@ class Iec101Master:
             # 现场抓包(KW-2200)：主站用户数据帧不带 DIR -> 0x73/0x53（PRM|FCB|FCV|FC=3）
             ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), True)
             note = note or "用户数据(FC=3)"
-        frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size)
+        frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size, cs_compat=self._cs_compat)
         self._arm_ack_wait()
         self._send(frame, note)
         self._await_link_ack(note)

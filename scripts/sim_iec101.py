@@ -314,10 +314,11 @@ def run(unbalanced: bool):
     check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
           "frame format: user-data control byte = 0x73/0x53 (no DIR)",
           str([h[:23] for h in raw if h.startswith("68")][:2]))
-    # FT1.2 校验和：从第一个长度字节起算（不含前导 0x68、CS 与 0x16）
+    # 校验和：现场算法(标准^0x80)与标准算法都应被接受
     var = [f for f in sim.rx_frames if f and f[0] == 0x68]
-    bad_cs = [f.hex(" ").upper() for f in var if f[-2] != (sum(f[1:-2]) & 0xFF)]
-    check(bool(var) and not bad_cs, "variable frame checksum = sum(L,L,68,C,A,ASDU) mod 256",
+    bad_cs = [f.hex(" ").upper() for f in var
+              if f[-2] not in ((sum(f[1:-2]) & 0xFF), (sum(f[1:-2]) & 0xFF) ^ 0x80)]
+    check(bool(var) and not bad_cs, "variable frame checksum valid (standard or field algorithm)",
           str(bad_cs[:1]))
     fixed = [f for f in sim.rx_frames if f and f[0] == 0x10]
     bad_fcs = [f.hex(" ").upper() for f in fixed if f[-2] != (sum(f[1:-2]) & 0xFF)]
@@ -403,8 +404,32 @@ def run_dir_variant():
     m.disconnect()
 
 
+def run_field_frame_check():
+    """Byte-compare our frames against the real KW-2200 capture (F30G terminal)."""
+    print("\n=== field capture compatibility (KW-2200 / F30G) ===")
+    field_gi = bytes.fromhex("68 0C 0C 68 F3 01 00 64 01 06 00 01 00 00 00 14 74 16")
+    info = link.parse_frame(field_gi, ADDR_SIZE)
+    check(info["kind"] == "variable" and info["cs_ok"],
+          "field capture (GI) parses, checksum accepted (field algorithm)")
+    asdu = codec104.build_interrogation(CA, oa=0, cot_size=2, ca_size=2, ioa_size=2)
+    ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, True, True)
+    ours = link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE, cs_compat=True)
+    check(ours == field_gi, "our GI frame is byte-identical to KW-2200 capture",
+          f"ours={ours.hex(' ').upper()} field={field_gi.hex(' ').upper()}")
+    std = link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE, cs_compat=False)
+    check(std[-2] ^ 0x80 == field_gi[-2], "standard checksum differs by 0x80 (as observed on site)")
+    field_mei = bytes.fromhex("68 0C 0C 68 73 01 00 46 01 04 00 01 00 00 00 02 C2 16")
+    check(link.parse_frame(field_mei, ADDR_SIZE)["cs_ok"],
+          "field capture (slave M_EI_NA_1) parses, checksum accepted")
+    field_ack = bytes.fromhex("10 80 01 00 81 16")
+    fi = link.parse_frame(field_ack, ADDR_SIZE)
+    check(fi["kind"] == "fixed" and fi["fc"] == link.FC_ACK and fi["prm"] is False,
+          "field capture (master ACK 0x80) parsed as confirmation")
+
+
 if __name__ == "__main__":
     run_link_roundtrip()
+    run_field_frame_check()
     run(unbalanced=True)
     run(unbalanced=False)
     run_dir_variant()

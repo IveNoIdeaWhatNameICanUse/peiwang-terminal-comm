@@ -100,6 +100,7 @@
     $("pollPeriod").value = s.poll_period || 1.0;
     $("balanced").checked = !!s.balanced;
     $("dataFrameDir").checked = !!s.data_frame_dir;
+    $("csCompat").checked = s.cs_compat === undefined ? true : !!s.cs_compat;
     await refreshSerialPorts(s.serial_port || "");
     $("serialParams").style.display = ($("protocolSel").value === "101") ? "" : "none";
     $("btnParams").textContent = ($("protocolSel").value === "101") ? "101 参数设置" : "104 参数设置";
@@ -129,6 +130,7 @@
       poll_period: Number($("pollPeriod").value || 1.0),
       balanced: $("balanced").checked,
       data_frame_dir: $("dataFrameDir").checked,
+      cs_compat: $("csCompat").checked,
     };
   }
 
@@ -380,6 +382,7 @@
           [`信息体地址长度(字节)`, `<select id="p_ioa_size_101"><option value="2"${sel(2, s.ioa_size_101 || 2)}>2</option><option value="3"${sel(3, s.ioa_size_101)}>3</option></select>`],
           [`平衡方式`, `<label style="font-weight:normal;"><input id="p_balanced" type="checkbox"${s.balanced ? " checked" : ""} /> 勾选=平衡（不勾=非平衡周期轮询）</label>`],
           [`用户数据帧带 DIR`, `<label style="font-weight:normal;"><input id="p_data_frame_dir" type="checkbox"${s.data_frame_dir ? " checked" : ""} /> 默认不勾（与 KW-2200 现场一致）</label>`],
+          [`校验和兼容`, `<label style="font-weight:normal;"><input id="p_cs_compat" type="checkbox"${s.cs_compat === undefined || s.cs_compat ? " checked" : ""} /> 可变帧控制位 bit7 取反（KW-2200 同规则）</label>`],
         ];
         $("modalTitle").textContent = "101 参数设置 - " + (s.name || "");
         $("modalBody").innerHTML = fields
@@ -400,6 +403,7 @@
             ioa_size_101: Number($("p_ioa_size_101").value || 2),
             balanced: $("p_balanced").checked,
             data_frame_dir: $("p_data_frame_dir").checked,
+            cs_compat: $("p_cs_compat").checked,
           };
           await api("update_session", curSid, data);
           ok101.removeEventListener("click", handler101);
