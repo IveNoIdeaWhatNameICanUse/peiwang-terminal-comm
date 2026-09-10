@@ -72,6 +72,7 @@ class Iec101Master:
         self._ack_note = ""            # 确认类型说明(如 链路忙)
         self._cs_compat = True         # 可变帧校验和兼容现场(连接时取参数)
         self._dir_override: Optional[bool] = None   # 探测期间临时覆盖“数据帧带DIR”
+        self._saw_init_end = False     # 是否已收到从站“初始化结束”(M_EI_NA_1)
         self._acd = False              # 从站请求访问位
 
     # ---------- helpers ----------
@@ -130,6 +131,7 @@ class Iec101Master:
         self._params = p
         self._cs_compat = bool(getattr(p, "cs_compat", True))
         self._dir_override = None
+        self._saw_init_end = False
         self._buf.clear()
         self._stop.clear()
         self._fcb = False
@@ -250,24 +252,25 @@ class Iec101Master:
             pass
 
     def _reset_link(self, ack_timeout: Optional[float] = None) -> bool:
-        """复位链路(FC=0) 并请求链路状态(FC=9)；返回是否收到从站确认。"""
+        """按现场(KW-2200)时序：请求链路状态(FC=9) → 复位远方链路(FC=0)。返回是否收到确认。"""
         assert self._params
         p = self._params
         t = float(ack_timeout or min(float(p.resp_timeout or 1.5), 1.5))
-        if p.balanced:
-            # 现场抓包：复位链路 0xC0 / 请求链路状态 0xC9（DIR=1, PRM=1, 无 FCB/FCV）
-            ctrl = link.ctrl_balanced(link.FC_RESET_LINK, True)
-        else:
-            ctrl = link.ctrl_primary(link.FC_RESET_LINK, False, False)
-        self._arm_ack_wait()
-        self._send_fixed(ctrl, "复位链路(FC=0)")
-        ok1 = self._wait_ack(t)
-        if not self._connected:
-            return False
+        # 1) 请求链路状态（现场第一帧就是 C9）
         ctrl = link.ctrl_balanced(link.FC_REQ_LINK_STATUS, True) if p.balanced \
             else link.ctrl_primary(link.FC_REQ_LINK_STATUS, False, False)
         self._arm_ack_wait()
         self._send_fixed(ctrl, "请求链路状态(FC=9)")
+        ok1 = self._wait_ack(t)
+        if not self._connected:
+            return False
+        # 2) 复位远方链路
+        if p.balanced:
+            ctrl = link.ctrl_balanced(link.FC_RESET_LINK, True)   # 0xC0
+        else:
+            ctrl = link.ctrl_primary(link.FC_RESET_LINK, False, False)   # 0x40
+        self._arm_ack_wait()
+        self._send_fixed(ctrl, "复位链路(FC=0)")
         ok2 = self._wait_ack(t)
         return bool(ok1 and ok2)
 
@@ -285,10 +288,16 @@ class Iec101Master:
             return
         if ok:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
-            if self._ack_note == "链路忙":
-                time.sleep(0.5)          # 从站报“链路忙”：稍等再发数据
-            # 自动总召唤：依次尝试三种控制位/校验和组合，哪种得到响应就固定（用户无需关心开关）
-            combos = [(True, True), (False, True), (True, False)]
+            # 按现场时序：等从站上送“初始化结束”(M_EI_NA_1)，最多 3 秒；未收到也继续
+            deadline = time.time() + 3.0
+            while self._connected and time.time() < deadline and not self._saw_init_end:
+                time.sleep(0.05)
+            if self._saw_init_end:
+                self._log("已收到从站初始化结束(M_EI_NA_1)，开始总召唤")
+            else:
+                self._log("未收到从站初始化结束(M_EI_NA_1)，仍按现场组合发送总召唤")
+            # 以现场组合(DIR=带 + 校验和兼容，= KW-2200 报文)为主重试，最后两种为兜底
+            combos = [(True, True), (True, True), (True, True), (True, False), (False, True)]
             for attempt, (use_dir, use_cs) in enumerate(combos, 1):
                 if not self._connected:
                     return
@@ -300,8 +309,8 @@ class Iec101Master:
                 except Iec101Error:
                     return
                 tag = f"DIR={'带' if use_dir else '不带'}，校验和={'兼容' if use_cs else '标准'}"
-                self._log(f"已发送总召唤（第 {attempt}/3 次，{tag}），等待从站上送数据")
-                end = time.time() + 2.0
+                self._log(f"已发送总召唤（第 {attempt}/{len(combos)} 次，{tag}）")
+                end = time.time() + 2.5
                 got = False
                 while self._connected and time.time() < end:
                     if self._last_rx > before:
@@ -311,10 +320,10 @@ class Iec101Master:
                 if got:
                     self._log(f"从站已响应，已采用：{tag}")
                     return
-            # 三种组合都无响应：恢复用户设置
+            # 所有组合都无响应：恢复用户设置
             self._dir_override = None
             self._cs_compat = bool(getattr(p, "cs_compat", True))
-            self._log("总召唤 3 种报文组合均未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
+            self._log("总召唤多次未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
         else:
             self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
 
@@ -495,6 +504,8 @@ class Iec101Master:
             pass
         if parsed is None:
             return
+        if int(parsed.type_id) == 70:      # M_EI_NA_1 初始化结束
+            self._saw_init_end = True
         self._i_frames += 1
         self._put_i_msg(parsed.type_id, parsed.cot, parsed.pos)
         if parsed.objects and parsed.type_id in self.MONITOR_TYPES:
