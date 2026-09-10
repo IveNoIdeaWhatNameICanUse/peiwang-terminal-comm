@@ -313,7 +313,11 @@
     $("btnDisconnect").onclick = async () => { await api("disconnect", curSid); setConnected(false); };
     $("btnDisconnectAll").onclick = async () => { await api("disconnect_all"); setConnected(false); };
     $("btnRefreshNic").onclick = () => refreshNics();
-    $("protocolSel").onchange = () => updateParamButtons();
+    $("protocolSel").onchange = async () => {
+      updateParamButtons();
+      // 协议一旦切换就写回会话，避免后续刷新（如保存 101 参数）把界面改回旧协议
+      if (curSid) await api("update_session", curSid, { protocol: $("protocolSel").value });
+    };
     $("btnSave").onclick = async () => {
       const r = await api("save_project", await api("get_project"), "");
       if (!r.ok) await appAlert("保存失败", r.error || "");
@@ -337,8 +341,7 @@
           [`链路应答超时(秒)`, `<input id="p_link_ack_timeout" type="number" step="1" value="${s.link_ack_timeout || 10}" style="width:100px;" />`],
           [`信息体地址长度(字节)`, `<select id="p_ioa_size_101"><option value="2"${sel(2, s.ioa_size_101 || 2)}>2</option><option value="3"${sel(3, s.ioa_size_101)}>3</option></select>`],
           [`平衡方式`, `<label style="font-weight:normal;"><input id="p_balanced" type="checkbox"${s.balanced ? " checked" : ""} /> 勾选=平衡（不勾=非平衡周期轮询）</label>`],
-          [`用户数据帧带 DIR`, `<label style="font-weight:normal;"><input id="p_data_frame_dir" type="checkbox"${s.data_frame_dir ? " checked" : ""} /> 默认不勾（与 KW-2200 现场一致）</label>`],
-          [`校验和兼容`, `<label style="font-weight:normal;"><input id="p_cs_compat" type="checkbox"${s.cs_compat === undefined || s.cs_compat ? " checked" : ""} /> 可变帧控制位 bit7 取反（KW-2200 同规则）</label>`],
+          [`数据帧格式`, `<span style="font-weight:normal;color:#666;">连接后自动探测（带DIR+兼容 / 不带DIR+兼容 / 带DIR+标准），哪种有响应即采用</span>`],
         ];
         $("modalTitle").textContent = "101 参数设置 - " + (s.name || "");
         $("modalBody").innerHTML = fields
@@ -358,8 +361,7 @@
             link_ack_timeout: Number($("p_link_ack_timeout").value || 10),
             ioa_size_101: Number($("p_ioa_size_101").value || 2),
             balanced: $("p_balanced").checked,
-            data_frame_dir: $("p_data_frame_dir").checked,
-            cs_compat: $("p_cs_compat").checked,
+            protocol: "101",          // 保存 101 参数即确认使用 101
           };
           await api("update_session", curSid, data);
           ok101.removeEventListener("click", handler101);
