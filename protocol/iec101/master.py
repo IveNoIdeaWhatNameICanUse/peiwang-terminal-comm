@@ -288,14 +288,14 @@ class Iec101Master:
             return
         if ok:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
-            # 按现场时序：等从站上送“初始化结束”(M_EI_NA_1)，最多 3 秒；未收到也继续
-            deadline = time.time() + 3.0
+            # 按现场时序：等从站上送“初始化结束”(M_EI_NA_1)，最多 8 秒；未收到也继续
+            deadline = time.time() + 8.0
             while self._connected and time.time() < deadline and not self._saw_init_end:
                 time.sleep(0.05)
             if self._saw_init_end:
                 self._log("已收到从站初始化结束(M_EI_NA_1)，开始总召唤")
             else:
-                self._log("未收到从站初始化结束(M_EI_NA_1)，仍按现场组合发送总召唤")
+                self._log("8s 内未收到从站初始化结束(M_EI_NA_1)：从站可能未就绪或已完成初始化，仍发送总召唤")
             # 以现场组合(DIR=带 + 校验和兼容，= KW-2200 报文)为主重试，最后两种为兜底
             combos = [(True, True), (True, True), (True, True), (True, False), (False, True)]
             for attempt, (use_dir, use_cs) in enumerate(combos, 1):

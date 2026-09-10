@@ -64,6 +64,7 @@ GI_DATA_ME = mk_asdu(13, 20, CA, me_nc_objects([(1001, 220.5)]))
 GI_END = mk_asdu(100, 10, CA, b"")                                  # 激活终止
 SPONT_ME = mk_asdu(13, 3, CA, me_nc_objects([(1001, 12.34)]))
 SOE_SP = mk_asdu(30, 3, CA, sp_tb_objects([(5, True)]))
+MEI_NA_1 = mk_asdu(70, 4, CA, b"\x00\x00\x02", count=1)   # M_EI_NA_1 初始化结束(现场: 46 01 04 00 01 00 00 00 02)
 
 
 # ---------------------------------------------------------------- fake serial
@@ -82,6 +83,7 @@ class SlaveSim:
         self.rx_asdus = []
         self.acd = acd          # access demand flag reported in link-status response
         self.interrogated = False
+        self.init_reported = False
 
     def emit(self, frame):
         self.out += frame
@@ -108,6 +110,11 @@ class SlaveSim:
                     self.emit(link.build_single())
                 else:
                     self.emit(link.build_fixed(link.ctrl_secondary(link.FC_ACK), ADDR, ADDR_SIZE))
+                if not self.init_reported:
+                    # 现场行为：复位链路确认后，从站主动上报“初始化结束”(M_EI_NA_1)
+                    self.init_reported = True
+                    self.emit(link.build_variable(link.ctrl_secondary(link.FC_DATA), ADDR,
+                                                  MEI_NA_1, ADDR_SIZE))
             elif fc == link.FC_REQ_LINK_STATUS:
                 # 现场从站：用“链路忙”(FC=11)回应请求链路状态
                 self.emit(link.build_fixed(link.ctrl_secondary(link.FC_LINK_BUSY), ADDR, ADDR_SIZE))
@@ -266,7 +273,7 @@ def run(unbalanced: bool):
     check(got_me, "spontaneous M_ME_NC_1 delivered to points event")
 
     # general interrogation is auto-issued right after link init
-    check(wait_for(lambda: sim.interrogated, 4.0), "slave received C_IC_NA_1 (COT=6) [auto GI]")
+    check(wait_for(lambda: sim.interrogated, 8.0), "slave received C_IC_NA_1 (COT=6) [auto GI]")
     check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 1
                                for e in events), 5.0), "GI single points delivered")
     check(wait_for(lambda: any(e.get("type") == "points" and e.get("type_id") == 13
