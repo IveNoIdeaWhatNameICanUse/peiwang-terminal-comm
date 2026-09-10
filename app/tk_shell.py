@@ -461,6 +461,10 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
 
     def undo_setpoint():
         apply_form_to_session()
+        # 国网：撤销 = 203 VSQ=0 + 区号 + PI(CR=1)，无信息体地址，无需选中点
+        if variant_var.get() == "国网":
+            _ok(api.cancel_setpoint(0, area=_current_area()))
+            return
         items = _sp_items()
         if not items:
             messagebox.showwarning("提示", "请先在“遥调”点表中选中定值点")

@@ -295,6 +295,9 @@ class ProjectStore:
         pts = self.config.session_points(sid)
         changed = []
         by_ioa = {p.ioa: p for p in pts}
+        # 仅遥信/遥测数据类自动创建新点；控制/参数类确认(55/108/202/203 等)
+        # 不在点表时不自动添加(如 203 固化/撤销确认的 IOA=0 整区对象)
+        AUTO_CREATE = {1, 3, 5, 7, 9, 11, 13, 15, 30, 31, 36}
         for obj in objects:
             ioa = int(obj["ioa"])
             extra = obj.get("extra") or {}
@@ -324,6 +327,8 @@ class ProjectStore:
                     by_ioa[ioa].data_type = int(extra["dtype"])
                 changed.append(asdict(by_ioa[ioa]))
             else:
+                if rt not in AUTO_CREATE or ioa == 0:
+                    continue  # 控制/参数确认或整区对象：不自动建点
                 p = PointDef(
                     ioa=ioa,
                     type_id=0,

@@ -531,6 +531,7 @@ class Iec104Master:
             try:
                 data = sock.recv(4096)
                 if not data:
+                    self._log("链路断开：对端(从站)关闭了连接，3s 后自动重连")
                     self._emit(
                         {
                             "type": "connection",
@@ -556,7 +557,9 @@ class Iec104Master:
                 now = time.time()
                 if p:
                     # T3 空闲超时：发送链路测试(act)，并等待从站确认
-                    if not self._testfr_waiting and now - self._last_rx > p.t3:
+                    # 空闲 = 最后收发较晚者起算（与从站对等，避免从站先到期断开）
+                    idle = now - max(self._last_rx, self._last_tx)
+                    if not self._testfr_waiting and idle > p.t3:
                         try:
                             self._send_raw(codec.build_u_frame(testfr=True), note="链路测试(act)")
                             self._testfr_waiting = True
@@ -591,8 +594,9 @@ class Iec104Master:
                         except MasterError:
                             pass
                 continue
-            except OSError:
+            except OSError as e:
                 if not self._stop.is_set():
+                    self._log(f"链路断开：接收中断（{e}），3s 后自动重连")
                     self._emit(
                         {
                             "type": "connection",
@@ -791,13 +795,24 @@ class Iec104Master:
                 }
             )
 
+        # S 帧确认策略：
+        # ① 遥控(45/46/47)/遥调(48/49/50/55/108/202/203)/SOE(30/31)/否定确认后立即回 S 帧
+        #    —— 刷新终端链路活动时间，同时若终端已断链，发送将立刻暴露异常
+        # ② 其余按 W/2 阈值批量确认（T2 定时兜底见 _timer_loop）
         w = self._params.w if self._params else 8
-        if self._ack_pending >= max(1, w // 2):
+        urgent = bool(
+            parsed is not None
+            and (
+                parsed.type_id in (30, 31, 45, 46, 47, 48, 49, 50, 55, 108, 202, 203)
+                or not parsed.pos  # 否定确认(P/N=1)
+            )
+        )
+        if self._ack_pending and (urgent or self._ack_pending >= max(1, w // 2)):
             try:
                 self._send_raw(codec.build_s_frame(self._nr), note=f"监视帧(确认) N(R)={self._nr}")
                 self._ack_pending = 0
-            except MasterError:
-                pass
+            except MasterError as e:
+                self._log(f"发送监视帧(确认)失败：{e}（链路可能已断开）")
 
     def _timer_loop(self) -> None:
         """周期任务（总召唤/校时/召唤度）与超时检测（启动应答/远控命令）。"""
@@ -863,6 +878,7 @@ class Iec104Master:
             time.sleep(3)
             if self._stop.is_set() or self._connected:
                 return
+            self._log(f"自动重连({i + 1}/3)…")
             self._emit(
                 {
                     "type": "connection",

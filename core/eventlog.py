@@ -49,13 +49,20 @@ class EventLog:
         txt = "链路启动" if state == "start" else "链路停止"
         self.add(0, "", txt, "sys")
 
-    def on_yx(self, ioa: int, name: str, value, is_soe: bool) -> None:
+    @staticmethod
+    def _yx_text(tid: int, value) -> str:
+        """遥信值显示：单点(1/30)：1=合、0=分；双点(3/31)：2=合、1=分、0/3=不确定。"""
+        if tid in (3, 31):
+            return {0: "不确定", 1: "分", 2: "合", 3: "不确定"}.get(int(value or 0), str(value))
+        return "合" if value in (1, True, "1") else "分"
+
+    def on_yx(self, ioa: int, name: str, value, tid: int = 1, is_soe: bool = False) -> None:
         """YX: change counts COS only; SOE counted separately (no double)."""
         with self._lock:
             st = self._stats.setdefault(ioa, {})
             st.setdefault("change", 0)
             st.setdefault("soe", 0)
-            vs = "合" if value in (1, True, "1") else "分"
+            vs = self._yx_text(tid, value)
             if is_soe:
                 # SOE：独立记录，只计 SOE 数量，不影响变位次数
                 st["soe"] += 1
@@ -141,9 +148,9 @@ class EventLog:
                 cat = cats.get(ioa, "")
                 nm = names.get(ioa, "IOA-%d" % ioa)
                 if ioa == 0 and not cat:
-                    # 整区固化(无具体点)归入遥调统计
+                    # 整区固化/撤销(无具体点)归入遥调统计
                     cat = "遥调"
-                    nm = "固化(整区)"
+                    nm = "固化(整区)" if st.get("exec") else "撤销(整区)"
                 out.append({"ioa": ioa, "name": nm, "cat": cat, **st})
             seen = {r["ioa"] for r in out}
             for ioa, name in names.items():

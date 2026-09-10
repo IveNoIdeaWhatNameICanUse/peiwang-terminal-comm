@@ -160,27 +160,30 @@ class ApiBridge:
                             ioa = int(obj.get("ioa") or 0)
                             sp = smeta.get(ioa)
                             snm = (sp.name if sp and sp.name else f"IOA-{ioa}")
-                            slog.on_yx(ioa, snm, obj.get("value"), is_soe=True)
+                            stid = int(obj.get("type_id") or 0)
+                            slog.on_yx(ioa, snm, obj.get("value"), tid=stid, is_soe=True)
                     event = {**event, "points": changed}
                     self._push(event)
                     return
             # 事件记录：SOE/COS/遥测统计（排除总召唤/组召唤响应等首次全量上送）
+            # COT 在事件顶层(帧级)，不在各对象内；5=响应组召唤 20=响应站召唤
+            if int(event.get("cot") or 0) in (5, 20):
+                event = {**event, "points": changed}
+                self._push(event)
+                return
             log = self._event_log(sid)
             pts = self.store.config.session_points(sid)
             meta = {}
             for p in pts:
                 meta[p.ioa] = p
             for obj in event.get("objects") or []:
-                # COT=5(响应组召唤)/20(响应站召唤) 为首次全量/应答上送，不计变位
-                if int(obj.get("cot") or 0) in (5, 20):
-                    continue
                 ioa = int(obj.get("ioa") or 0)
                 tid = int(obj.get("type_id") or 0)
                 p = meta.get(ioa)
                 nm = (p.name if p and p.name else f"IOA-{ioa}")
                 val = obj.get("value")
                 if p and p.category == "遥信":
-                    log.on_yx(ioa, nm, val, is_soe=tid in (30, 31))
+                    log.on_yx(ioa, nm, val, tid=tid, is_soe=tid in (30, 31))
                 elif p and p.category == "遥测":
                     log.on_yc(
                         ioa, nm, val,
@@ -206,9 +209,9 @@ class ApiBridge:
             if p.ioa == int(ioa):
                 nm = p.name or f"IOA-{ioa}"
                 break
-        if not nm:
-            nm = "固化(整区)" if int(ioa) == 0 and action == "exec" else f"IOA-{ioa}"
-        self._event_log(sid).on_adjust(int(ioa), nm, action, value)
+        if not nm and int(ioa) == 0:
+            nm = "固化(整区)" if action == "exec" else "撤销(整区)"
+        self._event_log(sid).on_adjust(int(ioa), nm or f"IOA-{ioa}", action, value)
 
     def _ensure_master(self, sid: str) -> Iec104Master:
         if sid not in self._masters:
@@ -810,7 +813,8 @@ class ApiBridge:
         )
 
     def cancel_setpoint(self, ioa: int, kind: str = "", area: int = 1) -> dict:
-        """定值整定撤销(COT=8)：等停止激活确认后弹窗结果。"""
+        """定值整定撤销(COT=8)：等停止激活确认后弹窗结果。
+        国网 203 撤销报文无信息体地址(整区撤销)，ioa 传 0 即可。"""
         tid = 203 if self.store.config.protocol_variant == "国网" else 55
         self._record_adjust(ioa, "cancel", None)
         return self._cmd_confirm(

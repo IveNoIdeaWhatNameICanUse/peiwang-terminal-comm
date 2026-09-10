@@ -5,104 +5,166 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>配网终端通讯 · 104模拟主站</title>
   <link rel="stylesheet" href="styles.css" />
+  <style>
+    .sidebar { display: flex; gap: 16px; }
+    .side { width: 150px; flex: 0 0 150px; }
+    .side button { width: 100%; margin-bottom: 6px; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+    .tabs .tab { padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; background: #fff; }
+    .tabs .tab.on { background: var(--accent); color: #fff; }
+    .logbox { height: 300px; overflow: auto; }
+    .lbl { font-size: 12px; color: var(--muted); }
+    .mono { font-family: Consolas, monospace; font-size: 12px; }
+    td.num { text-align: right; }
+    .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; align-items: center; }
+  </style>
 </head>
 <body>
-  <!-- [AGENT_CHANGE_BEGIN] 2026-09-07 104-MVP界面 -->
   <header class="top">
     <div class="brand">配网终端通讯 · 104 模拟主站</div>
     <div id="connBadge" class="badge off">未连接</div>
   </header>
 
-  <main class="layout">
-    <section class="panel">
-      <h2>连接配置</h2>
-      <div class="grid2">
-        <label>从站 IP <input id="remoteIp" value="127.0.0.1" /></label>
-        <label>从站端口 <input id="remotePort" type="number" value="2404" /></label>
-        <label>本地网卡/IP
-          <select id="localIp"></select>
-        </label>
-        <label>本地端口（空=自动）
-          <input id="localPort" type="number" min="0" max="65535" placeholder="自动" />
-        </label>
-        <label>公共地址 CA <input id="ca" type="number" value="1" /></label>
-        <label>源发地址 OA <input id="oa" type="number" value="0" /></label>
-      </div>
-      <div class="row">
-        <button id="btnConnect" class="primary">连接</button>
-        <button id="btnDisconnect">断开</button>
-        <button id="btnRefreshNic">刷新网卡</button>
-        <button id="btnSave">保存工程</button>
-      </div>
+  <main class="layout sidebar">
+    <section class="side">
+      <h2>主站会话</h2>
+      <select id="sessionSel" style="width:100%; margin-bottom:6px;"></select>
+      <button id="btnNewSession">新建主站</button>
+      <button id="btnDelSession">删除主站</button>
+      <button id="btnImportConfig">导入配置</button>
+      <hr style="margin:10px 0;" />
+      <button id="btnViewPoints" class="primary">四遥状态</button>
+      <button id="btnViewMonitor">报文监视</button>
+      <button id="btnViewEvents">事件记录</button>
+      <button id="btnStats">四遥统计</button>
     </section>
 
-    <section class="panel">
-      <h2>四遥操作</h2>
-      <div class="row">
-        <button id="btnGI">总召唤</button>
-        <button id="btnClock">时钟同步</button>
-      </div>
-      <div class="grid2">
-        <label>遥控 IOA <input id="cmdIoa" type="number" value="1" /></label>
-        <label>类型
-          <select id="cmdKind">
-            <option value="sc">单点遥控</option>
-            <option value="dc">双点遥控</option>
-            <option value="se_nc">浮点设点</option>
-            <option value="se_na">归一化设点</option>
+    <div style="flex:1; min-width:0;">
+      <section class="panel">
+        <h2>当前会话连接参数</h2>
+        <div class="grid2">
+          <label>名称 <input id="sessionName" /></label>
+          <label>从站 IP <input id="remoteIp" value="127.0.0.1" /></label>
+          <label>从站端口 <input id="remotePort" type="number" value="2404" /></label>
+          <label>本地网卡/IP <select id="localIp"></select></label>
+          <label>本地端口（0=自动） <input id="localPort" type="number" min="0" max="65535" placeholder="自动" /></label>
+          <label>公共地址 CA <input id="ca" type="number" value="1" /></label>
+          <label>源发地址 OA <input id="oa" type="number" value="0" /></label>
+        </div>
+        <div class="row">
+          <button id="btnConnect" class="primary">连接</button>
+          <button id="btnDisconnect">断开</button>
+          <button id="btnDisconnectAll">全部断开</button>
+          <button id="btnRefreshNic">刷新网卡</button>
+          <button id="btnSave">保存工程</button>
+          <button id="btnParams">104参数设置</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>四遥操作（作用于当前会话）</h2>
+        <div class="toolbar">
+          <select id="variantSel">
+            <option>广西</option><option>南网</option><option>国网</option>
           </select>
-        </label>
-        <label>值/状态
-          <input id="cmdValue" value="1" title="单点:1合0分; 双点:2合1分; 设点:数值" />
-        </label>
-        <label class="check"><input id="cmdSelect" type="checkbox" checked /> 预置(SBO)</label>
-      </div>
-      <div class="row">
-        <button id="btnCmd" class="primary">下发命令</button>
-        <button id="btnExecute">仅执行</button>
-      </div>
-    </section>
+          <button id="btnGI">总召唤</button>
+          <button id="btnClock">时钟同步</button>
+        </div>
+        <div class="toolbar" id="setpointBar">
+          <span class="lbl">定值整定</span>
+          <label style="flex-direction:row; gap:4px;">单帧个数 <input id="batchNum" type="number" value="10" min="1" max="127" style="width:60px;" /></label>
+          <label style="flex-direction:row; gap:4px;">区号 <input id="areaNum" type="number" value="1" style="width:60px;" /></label>
+          <button id="btnReadSel">召唤选中</button>
+          <button id="btnPreset">预置</button>
+          <button id="btnActivate">激活</button>
+          <button id="btnUndo">撤销</button>
+          <button id="btnReadAll">参数全召唤</button>
+          <button id="btnReadArea">读定值区(201)</button>
+          <button id="btnSwitchArea">切换定值区(200)</button>
+        </div>
+      </section>
 
-    <section class="panel grow">
-      <h2>点表 / 实时数据</h2>
-      <div class="row">
-        <input id="newIoa" type="number" placeholder="IOA" />
-        <input id="newName" placeholder="名称" />
-        <select id="newType">
-          <option value="1">遥信 SP</option>
-          <option value="13">遥测 float</option>
-          <option value="45">遥控 SC</option>
-          <option value="50">设点 float</option>
-        </select>
-        <button id="btnAddPoint">添加点</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>IOA</th><th>名称</th><th>类型</th><th>值</th><th>品质</th><th></th></tr>
-          </thead>
-          <tbody id="pointBody"></tbody>
-        </table>
-      </div>
-    </section>
+      <section class="panel grow">
+        <div id="viewPoints">
+          <h2>四遥状态</h2>
+          <div class="tabs" id="catTabs"></div>
+          <div class="table-wrap" style="max-height:280px;">
+            <table>
+              <thead><tr>
+                <th>信息体地址(IOA)</th><th>名称</th><th>类型</th><th>值</th><th>品质</th><th>修改值</th>
+              </tr></thead>
+              <tbody id="pointBody"></tbody>
+            </table>
+          </div>
+          <div class="toolbar">
+            <label style="flex-direction:row; gap:4px;">IOA <input id="newIoa" type="number" style="width:80px;" /></label>
+            <label style="flex-direction:row; gap:4px;">名称 <input id="newName" style="width:140px;" /></label>
+            <select id="newType">
+              <option value="1">单点遥信</option>
+              <option value="3">双点遥信</option>
+              <option value="13">浮点遥测</option>
+              <option value="45">单点遥控</option>
+              <option value="46">双点遥控</option>
+              <option value="50">浮点设点</option>
+            </select>
+            <button id="btnAddPoint">添加点</button>
+            <button id="btnDelPoint">删除选中点</button>
+            <button id="btnImportCsv">导入CSV发码表</button>
+          </div>
+        </div>
 
-    <section class="panel grow">
-      <h2>报文监视 <button id="btnClearFrames" class="link">清空</button></h2>
-      <div id="frameLog" class="log"></div>
-    </section>
+        <div id="viewMonitor" class="hidden">
+          <h2>报文监视</h2>
+          <div class="toolbar">
+            <button id="btnClearFrames">清空</button>
+            <label style="flex-direction:row; gap:4px;"><input type="checkbox" id="autoScroll" checked /> 自动滚动</label>
+            <button id="btnExportFrames">导出报文</button>
+          </div>
+          <div id="frameLog" class="log logbox mono"></div>
+        </div>
+
+        <div id="viewEvents" class="hidden">
+          <h2>事件记录</h2>
+          <div class="toolbar">
+            <button id="btnClearEvents">清空事件</button>
+            <button id="btnRefreshEvents">刷新</button>
+          </div>
+          <div class="table-wrap" style="max-height:300px;">
+            <table>
+              <thead><tr>
+                <th>接收时间</th><th>信息体</th><th>事件内容</th><th>事件类别</th>
+              </tr></thead>
+              <tbody id="eventBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="viewStats" class="hidden">
+          <h2>四遥统计</h2>
+          <div class="toolbar">
+            <button id="btnRefreshStats" class="primary">刷新</button>
+          </div>
+          <div class="tabs" id="statTabs"></div>
+          <div id="statSum" class="toolbar"></div>
+          <div class="table-wrap" style="max-height:280px;">
+            <table>
+              <thead id="statHead"></thead>
+              <tbody id="statBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
 
   <div id="modalMask" class="modal-mask hidden">
     <div class="modal">
       <div id="modalTitle" class="modal-title">提示</div>
       <div id="modalBody" class="modal-body"></div>
-      <div class="row end">
-        <button id="modalOk" class="primary">确定</button>
-      </div>
+      <div class="row end"><button id="modalOk">确定</button></div>
     </div>
   </div>
-
+  <input type="file" id="importFile" class="hidden" accept=".csv,.json,.txt" />
   <script src="app.js"></script>
-  <!-- [AGENT_CHANGE_END] 2026-09-07 104-MVP界面 -->
 </body>
 </html>
