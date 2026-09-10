@@ -67,7 +67,7 @@ def run_pywebview(api: ApiBridge) -> bool:
     ui_url = f"http://127.0.0.1:{port}/index.html"
 
     window = webview.create_window(
-        "配网终端通讯 · 104模拟主站",
+        "配网终端通讯 · 104/101 模拟主站",
         ui_url,
         js_api=api,
         width=1180,

@@ -100,6 +100,7 @@
     $("balanced").checked = !!s.balanced;
     await refreshSerialPorts(s.serial_port || "");
     $("serialParams").style.display = ($("protocolSel").value === "101") ? "" : "none";
+    $("btnParams").textContent = ($("protocolSel").value === "101") ? "101 参数设置" : "104 参数设置";
     $("variantSel").value = p.protocol_variant || "广西";
     await refreshNics(s.local_ip || "");
     if (s.local_ip) $("localIp").value = s.local_ip;
@@ -348,6 +349,7 @@
     $("btnRefreshSerial").onclick = () => refreshSerialPorts();
     $("protocolSel").onchange = () => {
       $("serialParams").style.display = ($("protocolSel").value === "101") ? "" : "none";
+      $("btnParams").textContent = ($("protocolSel").value === "101") ? "101 参数设置" : "104 参数设置";
       if ($("protocolSel").value === "101") refreshSerialPorts();
     };
     $("btnSave").onclick = async () => {
@@ -357,6 +359,49 @@
     };
     $("btnParams").onclick = async () => {
       const s = (await api("get_project")).sessions.find((x) => x.id === curSid) || {};
+      if ((s.protocol || "104") === "101") {
+        const ports = await api("list_serial_ports");
+        const portOpts = (ports || []).map((p) =>
+          `<option value="${p.port}"${p.port === (s.serial_port || "") ? " selected" : ""}>${p.port}</option>`).join("");
+        const sel = (v, cur) => (String(v) === String(cur) ? " selected" : "");
+        const fields = [
+          [`串口`, `<select id="p_serial_port">${portOpts || `<option value="${s.serial_port || "COM1"}">${s.serial_port || "COM1"}</option>`}</select>`],
+          [`波特率`, `<input id="p_baudrate" type="number" value="${s.baudrate || 9600}" style="width:100px;" />`],
+          [`校验`, `<select id="p_serial_parity"><option value="N"${sel("N", s.serial_parity)}>N 无</option><option value="E"${sel("E", s.serial_parity || "E")}>E 偶</option><option value="O"${sel("O", s.serial_parity)}>O 奇</option></select>`],
+          [`停止位`, `<select id="p_stopbits"><option value="1"${sel(1, s.stopbits || 1)}>1</option><option value="2"${sel(2, s.stopbits)}>2</option></select>`],
+          [`链路地址(>255 自动 2 字节)`, `<input id="p_link_addr" type="number" value="${s.link_addr || 1}" style="width:100px;" />`],
+          [`轮询周期(秒)`, `<input id="p_poll_period" type="number" step="0.1" value="${s.poll_period || 1.0}" style="width:100px;" />`],
+          [`链路应答超时(秒)`, `<input id="p_link_ack_timeout" type="number" step="1" value="${s.link_ack_timeout || 10}" style="width:100px;" />`],
+          [`信息体地址长度(字节)`, `<select id="p_ioa_size_101"><option value="2"${sel(2, s.ioa_size_101 || 2)}>2</option><option value="3"${sel(3, s.ioa_size_101)}>3</option></select>`],
+          [`平衡方式`, `<label style="font-weight:normal;"><input id="p_balanced" type="checkbox"${s.balanced ? " checked" : ""} /> 勾选=平衡（不勾=非平衡周期轮询）</label>`],
+        ];
+        $("modalTitle").textContent = "101 参数设置 - " + (s.name || "");
+        $("modalBody").innerHTML = fields
+          .map(([label, html]) => `<div>${label}：${html}</div>`).join("<br/>");
+        $("modalMask").classList.remove("hidden");
+        const ok101 = $("modalOk");
+        ok101.textContent = "保存";
+        const handler101 = async () => {
+          const data = {
+            serial_port: $("p_serial_port").value,
+            baudrate: Number($("p_baudrate").value || 9600),
+            serial_parity: $("p_serial_parity").value,
+            stopbits: Number($("p_stopbits").value || 1),
+            link_addr: Number($("p_link_addr").value || 1),
+            poll_period: Number($("p_poll_period").value || 1.0),
+            link_ack_timeout: Number($("p_link_ack_timeout").value || 10),
+            ioa_size_101: Number($("p_ioa_size_101").value || 2),
+            balanced: $("p_balanced").checked,
+          };
+          await api("update_session", curSid, data);
+          ok101.removeEventListener("click", handler101);
+          ok101.textContent = "确定";
+          $("modalMask").classList.add("hidden");
+          await loadSessionForm();
+        };
+        ok101.addEventListener("click", handler101);
+        return;
+      }
       const rows = [
         ["T0 连接超时(秒)", "t0", 30], ["T1 发送/测试超时(秒)", "t1", 15],
         ["T2 确认超时(秒)", "t2", 10], ["T3 空闲测试超时(秒)", "t3", 20],
