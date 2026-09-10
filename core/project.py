@@ -74,7 +74,7 @@ class SessionDef:
     serial_parity: str = "E"         # 校验: N无 / E偶 / O奇
     stopbits: int = 1                # 停止位
     link_addr: int = 1               # 101 链路地址
-    addr_size: int = 1               # 链路地址长度(1/2 字节)
+    addr_size: int = 2               # 链路地址长度(1/2 字节，国内常见 2)
     balanced: bool = False           # True=平衡方式, False=非平衡方式
     poll_period: float = 1.0         # 非平衡轮询周期(秒)
     ioa_size_101: int = 2            # 101 信息体地址长度(字节，国内常见 2)
@@ -117,7 +117,7 @@ class SessionDef:
             serial_parity=str(data.get("serial_parity") or "E"),
             stopbits=int(data.get("stopbits") or 1),
             link_addr=int(data.get("link_addr") or 1),
-            addr_size=int(data.get("addr_size") or 1),
+            addr_size=int(data.get("addr_size") or 2),
             balanced=bool(data.get("balanced", False)),
             poll_period=float(data.get("poll_period") or 1.0),
             ioa_size_101=int(data.get("ioa_size_101") or 2),

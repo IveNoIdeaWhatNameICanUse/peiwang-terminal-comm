@@ -36,8 +36,14 @@ def ctrl_secondary(fc: int, acd: bool = False, dfc: bool = False) -> int:
 
 
 def ctrl_balanced(fc: int, dir_master: bool = True, fcb: bool = False, fcv: bool = False) -> int:
-    """Balanced mode control byte: DIR(bit7) + FCB(bit6) + FCV(bit5) + FC."""
-    return (0x80 if dir_master else 0) | (0x20 if fcb else 0) | (0x10 if fcv else 0) | (fc & 0x0F)
+    """Balanced mode control byte: DIR + PRM + FCB + FCV + FC.
+
+    Master-originated frames set DIR=1 and PRM=1 -> 0xC0 base (matches field
+    captures: reset link 0xC0, request link status 0xC9, user data 0xF3).
+    Slave-originated frames keep both bits clear.
+    """
+    base = 0xC0 if dir_master else 0x00
+    return base | (0x20 if fcb else 0) | (0x10 if fcv else 0) | (fc & 0x0F)
 
 
 def parse_ctrl(c: int) -> dict:

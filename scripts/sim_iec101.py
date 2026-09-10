@@ -22,7 +22,7 @@ from protocol.iec101.master import Iec101Master, SerialParams  # noqa: E402
 from protocol.iec104 import codec as codec104          # noqa: E402
 
 ADDR = 1
-ADDR_SIZE = 1
+ADDR_SIZE = 2      # field captures (KW-2200 / terminals) use a 2-byte link address
 
 
 # ---------------------------------------------------------------- ASDU bytes
@@ -78,6 +78,7 @@ class SlaveSim:
         self.pending = []
         self.fc_rx = []          # primary frames received
         self.ack_rx = []         # secondary-direction frames received
+        self.rx_frames = []      # raw frames as received
         self.rx_asdus = []
         self.acd = acd          # access demand flag reported in link-status response
         self.interrogated = False
@@ -87,6 +88,7 @@ class SlaveSim:
 
     def feed(self, data):
         for frame in link.feed(self.buf, data, ADDR_SIZE):
+            self.rx_frames.append(frame)
             info = link.parse_frame(frame, ADDR_SIZE)
             try:
                 self.handle(info)
@@ -287,6 +289,22 @@ def run(unbalanced: bool):
 
     tx = [e for e in events if e.get("type") == "frame" and e.get("direction") == "TX"]
     rx = [e for e in events if e.get("type") == "frame" and e.get("direction") == "RX"]
+    raw = [f.hex(" ").upper() for f in sim.rx_frames]
+    if unbalanced:
+        check(any(h == "10 40 01 00 41 16" for h in raw),
+              "frame format: reset link = 10 40 01 00 41 16", str(raw[:3]))
+        check(any(h == "10 49 01 00 4A 16" for h in raw),
+              "frame format: link status = 10 49 01 00 4A 16")
+        check(any(h.startswith("10 4B 01 00") for h in raw), "frame format: level-2 poll = 10 4B 01 00 ...")
+    else:
+        check(any(h == "10 C0 01 00 C1 16" for h in raw),
+              "frame format: reset link = 10 C0 01 00 C1 16", str(raw[:3]))
+        check(any(h == "10 C9 01 00 CA 16" for h in raw),
+              "frame format: link status = 10 C9 01 00 CA 16")
+    want_c = ("73", "53") if unbalanced else ("F3", "D3")
+    check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
+          f"frame format: user-data control byte = 0x{want_c[0]}/0x{want_c[1]}",
+          str([h[:23] for h in raw if h.startswith("68")][:2]))
     print("  frames: TX=%d RX=%d, slave got %d ASDUs" % (len(tx), len(rx), len(sim.rx_asdus)))
     for a in sim.rx_asdus:
         print("    slave RX: %s COT=%s" % (a.type_name, a.cot))

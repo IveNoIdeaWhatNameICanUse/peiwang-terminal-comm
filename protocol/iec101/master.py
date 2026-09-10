@@ -223,14 +223,15 @@ class Iec101Master:
         p = self._params
         t = float(ack_timeout or min(float(p.resp_timeout or 1.5), 1.5))
         if p.balanced:
-            ctrl = link.ctrl_balanced(link.FC_RESET_LINK, True, self._next_fcb(), True)
+            # 现场抓包：复位链路 0xC0 / 请求链路状态 0xC9（DIR=1, PRM=1, 无 FCB/FCV）
+            ctrl = link.ctrl_balanced(link.FC_RESET_LINK, True)
         else:
-            ctrl = link.ctrl_primary(link.FC_RESET_LINK, self._next_fcb(), True)
+            ctrl = link.ctrl_primary(link.FC_RESET_LINK, False, False)
         self._send_fixed(ctrl, "复位链路(FC=0)")
         ok1 = self._wait_ack(t)
         if not self._connected:
             return False
-        ctrl = link.ctrl_balanced(link.FC_REQ_LINK_STATUS, True, False, False) if p.balanced \
+        ctrl = link.ctrl_balanced(link.FC_REQ_LINK_STATUS, True) if p.balanced \
             else link.ctrl_primary(link.FC_REQ_LINK_STATUS, False, False)
         self._send_fixed(ctrl, "请求链路状态(FC=9)")
         ok2 = self._wait_ack(t)
@@ -284,7 +285,8 @@ class Iec101Master:
             ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, self._next_fcb(), True)
             note = note or "用户数据(平衡)"
         else:
-            ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), False)
+            # 现场抓包：主站用户数据帧 0x73/0x53（PRM|FCB|FCV|FC=3）
+            ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), True)
             note = note or "用户数据(FC=3)"
         frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size)
         self._send(frame, note)

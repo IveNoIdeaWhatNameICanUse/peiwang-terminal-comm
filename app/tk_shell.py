@@ -50,6 +50,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     balanced_var = tk.BooleanVar(value=False)
     poll_var = tk.StringVar(value="1.0")
     ioa101_var = tk.StringVar(value="2")
+    addr101_var = tk.StringVar(value="2")
     _session_ids: list[str] = []
     _loading = {"flag": False}
 
@@ -118,6 +119,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             balanced_var.set(bool(s.get("balanced", False)))
             poll_var.set(str(s.get("poll_period") or 1.0))
             ioa101_var.set(str(s.get("ioa_size_101") or 2))
+            addr101_var.set(str(s.get("addr_size") or 2))
             try:
                 on_proto_change()
             except Exception:
@@ -150,6 +152,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 "balanced": bool(balanced_var.get()),
                 "poll_period": float(poll_var.get() or 1.0),
                 "ioa_size_101": int(ioa101_var.get() or 2),
+                "addr_size": int(addr101_var.get() or 2),
             },
         )
         api.set_active_session(sid)
@@ -271,12 +274,16 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ioa101_combo = ttk.Combobox(conn, textvariable=ioa101_var, values=["2", "3"],
                                 width=4, state="readonly")
     ioa101_combo.grid(row=6, column=1, sticky="w", padx=4)
-    ttk.Label(conn, text="（101 默认 2 字节，部分厂家用 3）").grid(
-        row=6, column=2, columnspan=4, sticky="w")
+    ttk.Label(conn, text="链路地址长度").grid(row=6, column=2)
+    addr101_combo = ttk.Combobox(conn, textvariable=addr101_var, values=["1", "2"],
+                                 width=4, state="readonly")
+    addr101_combo.grid(row=6, column=3, sticky="w", padx=4)
+    ttk.Label(conn, text="（默认 2 字节，部分现场用 1 字节）").grid(
+        row=6, column=4, columnspan=4, sticky="w")
 
     net_widgets = [local_combo]
     ser_widgets = [sport_combo, baud_combo, parity_combo, stop_combo, linkaddr_entry, chk_bal,
-                   poll_entry, btn_sport, ioa101_combo]
+                   poll_entry, btn_sport, ioa101_combo, addr101_combo]
     params_btn = {"w": None}   # 稍后创建：按协议切换文案
 
     def on_proto_change():
@@ -366,6 +373,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         parity_var2 = gv("serial_parity", "E")
         stop_var2 = gv("stopbits", 1)
         link_var = gv("link_addr", 1)
+        addr_var2 = gv("addr_size", 2)
         poll_var2 = gv("poll_period", 1.0)
         ack_var = gv("link_ack_timeout", 10.0)
         ioa_var2 = gv("ioa_size_101", 2)
@@ -389,16 +397,18 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         add_row(4, "停止位", ttk.Combobox(dlg, textvariable=stop_var2, values=["1", "2"],
                                           width=6, state="readonly"))
         add_row(5, "链路地址(>255 自动 2 字节)", ttk.Entry(dlg, textvariable=link_var, width=14))
-        add_row(6, "轮询周期(秒)", ttk.Entry(dlg, textvariable=poll_var2, width=14))
-        add_row(7, "链路应答超时(秒)", ttk.Entry(dlg, textvariable=ack_var, width=14))
-        add_row(8, "信息体地址长度(字节)", ttk.Combobox(dlg, textvariable=ioa_var2,
+        add_row(6, "链路地址长度(字节)", ttk.Combobox(dlg, textvariable=addr_var2,
+                                                     values=["1", "2"], width=6, state="readonly"))
+        add_row(7, "轮询周期(秒)", ttk.Entry(dlg, textvariable=poll_var2, width=14))
+        add_row(8, "链路应答超时(秒)", ttk.Entry(dlg, textvariable=ack_var, width=14))
+        add_row(9, "信息体地址长度(字节)", ttk.Combobox(dlg, textvariable=ioa_var2,
                                                        values=["2", "3"], width=6, state="readonly"))
         ttk.Checkbutton(dlg, text="平衡方式（不勾选=非平衡周期轮询）", variable=bal_var2).grid(
-            row=9, column=0, columnspan=2, sticky="w", padx=6, pady=6
+            row=10, column=0, columnspan=2, sticky="w", padx=6, pady=6
         )
         ttk.Label(dlg, text="链路层确认最多等 1.5s（后台等待，不卡界面）；\n链路应答超时用于命令确认等待",
                   foreground="#666", justify=tk.LEFT).grid(
-            row=10, column=0, columnspan=2, sticky="w", padx=6
+            row=11, column=0, columnspan=2, sticky="w", padx=6
         )
 
         def save_params():
@@ -409,6 +419,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                     "serial_parity": parity_var2.get() or "E",
                     "stopbits": int(stop_var2.get() or 1),
                     "link_addr": int(link_var.get() or 1),
+                    "addr_size": int(addr_var2.get() or 2),
                     "poll_period": float(poll_var2.get() or 1.0),
                     "link_ack_timeout": float(ack_var.get() or 10.0),
                     "ioa_size_101": int(ioa_var2.get() or 2),
@@ -423,7 +434,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             status.set(f"101 参数已保存（{data['serial_port']} {data['baudrate']}）")
 
         bt = ttk.Frame(dlg)
-        bt.grid(row=11, column=0, columnspan=2, pady=6)
+        bt.grid(row=12, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
 

@@ -641,7 +641,7 @@ class ApiBridge:
                 s = self.store.config.active_session()
             if getattr(s, "protocol", "104") == "101":
                 _la = int(s.link_addr or 1)
-                _as = int(getattr(s, "addr_size", 1) or 1)
+                _as = int(getattr(s, "addr_size", 2) or 2)
                 if _la > 0xFFFF:
                     return {"ok": False, "code": "BAD_LINK_ADDR", "error": "101 链路地址超范围(0~65535)"}
                 if _la > 0xFF and _as == 1:

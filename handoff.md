@@ -167,7 +167,11 @@ python scripts/build_exe.py
 - 非平衡：复位链路(FC=0) → 请求链路状态(FC=9) → 周期召唤 2 级(FC=11)；收到 ACD=1 时下次召唤 1 级(FC=10)；用户数据 FC=3 等 ACK
 - 平衡：控制域 DIR/FCB，用户数据等 FC=4 确认；链路初始化同复用 FC=0/FC=9
 - 连接不阻塞界面：链路初始化在后台线程执行（链路确认等待 ≤1.5s）；单字符 E5 视为复位确认；未收到确认时提示“未收到从站确认”而不谎报完成；非平衡轮询与初始化并行，连接后立即可见报文
-- 会话参数：`protocol=101`、`serial_port`、`baudrate`、`serial_parity`、`stopbits`、`link_addr`（>255 自动 2 字节）、`balanced`、`poll_period`、`ioa_size_101`（默认 2 字节）
+- 会话参数：`protocol=101`、`serial_port`、`baudrate`、`serial_parity`、`stopbits`、`link_addr`（>255 自动 2 字节）、`addr_size`（链路地址长度，默认 **2 字节**）、`balanced`、`poll_period`、`ioa_size_101`（默认 2 字节）
+- 报文格式（与现场抓包一致，帧例均为 2 字节链路地址=1）：
+  - 非平衡主站：复位链路 `10 40 01 00 41 16`、请求链路状态 `10 49 01 00 4A 16`、召唤 2 级 `10 4B 01 00 4C 16`、用户数据 `68 0C 0C 68 73 01 00 …`（FCB 翻转后 `53`）
+  - 平衡主站：复位链路 `10 C0 01 00 C1 16`、请求链路状态 `10 C9 01 00 CA 16`、用户数据 `68 0C 0C 68 F3 01 00 …`（FCB 翻转后 `D3`）
+  - 从站帧：`10 00 01 00 01 16`（确认）、`10 0B …`（链路忙）；部分终端从站帧 bit7 会置位（如 `8B`），解析时按 PRM=bit6 判定方向即可
 - UI：连接参数区「协议」下拉切换，选 101 后显示串口参数（Tk 与 WebView 均已同步）
 - 自测：`python scripts/sim_iec101.py`（内存回环模拟从站）、`python scripts/sim_iec101_api.py`（API 层集成）
 
