@@ -1,2 +1,7 @@
+PySide6>=6.6.0
+# UI 组件库：Fluent Design，Qt 原生绘制（不读 .html/.js/.css，不依赖 WebView）
+PySide6-Fluent-Widgets>=1.11.3
 pywebview>=5.0
 openpyxl>=3.1.0
+# 101 串口（core/api.py 与 protocol/iec101/* 使用；缺了界面仍能起，但 101 连不上串口）
+pyserial>=3.5

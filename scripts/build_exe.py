@@ -1,5 +1,6 @@
 # [AGENT_CHANGE_BEGIN] 2026-09-07 打包脚本
-"""打包桌面 exe（PyInstaller onedir）。"""
+"""打包桌面 exe（PyInstaller）。默认 onefile，产物是单个 dist/<name>.exe；
+也兼容 onedir 的 dist/<name>/<name>.exe（见下方 [AGENT_CHANGE 2026-09-12] 注释）。"""
 from __future__ import annotations
 
 import shutil
@@ -28,10 +29,13 @@ def main() -> None:
     ]
     print("RUN:", " ".join(cmd))
     subprocess.check_call(cmd, cwd=str(ROOT))
-    out = dist / "配网终端通讯" / "配网终端通讯.exe"
+    # [AGENT_CHANGE 2026-09-12] onefile 产物直接在 dist/ 下；同时兼容 onedir 的 dist/<name>/<name>.exe
+    out = dist / "配网终端通讯.exe"
+    if not out.exists():
+        out = dist / "配网终端通讯" / "配网终端通讯.exe"
     if not out.exists():
         # 兼容部分环境下中文目录编码差异
-        cands = list((dist).rglob("*.exe"))
+        cands = list(dist.rglob("*.exe"))
         print("exe candidates:", cands)
         if not cands:
             raise SystemExit("打包失败：未找到 exe")

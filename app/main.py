@@ -1,5 +1,5 @@
 # [AGENT_CHANGE_BEGIN] 2026-09-07 104-MVP入口
-"""应用入口：默认 tkinter；可选 PEIWANG_USE_WEBVIEW=1 时用磁盘 ui/ + 本地 HTTP。"""
+"""应用入口：默认 PySide6(Qt) 界面；PEIWANG_USE_TK=1 回退 Tk；PEIWANG_USE_WEBVIEW=1 走 WebView。"""
 from __future__ import annotations
 
 import os
@@ -17,10 +17,22 @@ def _app_root() -> Path:
 
 
 def _data_root() -> Path:
-    # 可写持久数据目录：exe 所在目录（打包后），源码用项目根
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 Qt版：打包后持久数据走 %APPDATA%
+    """可写持久数据目录。
+
+    打包后走 %APPDATA%\\配网终端通讯：装到 C:\\Program Files 时 exe 目录无写权限，
+    在 UAC 下会把工程配置写丢。源码运行时仍用项目根（configs/default.json 就在那里）。
+    """
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        base = os.environ.get("APPDATA") or str(Path.home())
+        target = Path(base) / "配网终端通讯"
+        try:
+            (target / "configs").mkdir(parents=True, exist_ok=True)
+            return target
+        except OSError:
+            return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+    # [AGENT_CHANGE_END] 2026-09-11 Qt版：打包后持久数据走 %APPDATA%
 
 
 ROOT = _app_root()
@@ -35,6 +47,12 @@ def _want_webview() -> bool:
     # [AGENT_CHANGE_BEGIN] 2026-09-07 默认Tk规避加密拦截
     return os.environ.get("PEIWANG_USE_WEBVIEW", "").strip() == "1"
     # [AGENT_CHANGE_END] 2026-09-07 默认Tk规避加密拦截
+
+
+def _want_tk() -> bool:
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 Qt界面：Tk 保留为显式回退
+    return os.environ.get("PEIWANG_USE_TK", "").strip() == "1"
+    # [AGENT_CHANGE_END] 2026-09-11 Qt界面
 
 
 def run_pywebview(api: ApiBridge) -> bool:
@@ -93,13 +111,22 @@ def run_tk(api: ApiBridge) -> None:
     run_tk_shell(api, _data_root())
 
 
+def run_qt(api: ApiBridge) -> None:
+    from app.qt import run_qt_shell
+
+    run_qt_shell(api, _data_root())
+
+
 def main() -> None:
-    # [AGENT_CHANGE_BEGIN] 2026-09-07 默认Tk规避加密拦截
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 Qt界面：默认 PySide6 + QSS（规避加密软件拦 HTML/WebView）
     api = ApiBridge(_data_root())
+    if _want_tk():
+        run_tk(api)
+        return
     if _want_webview() and run_pywebview(api):
         return
-    run_tk(api)
-    # [AGENT_CHANGE_END] 2026-09-07 默认Tk规避加密拦截
+    run_qt(api)
+    # [AGENT_CHANGE_END] 2026-09-11 Qt界面
 
 
 if __name__ == "__main__":
