@@ -55,9 +55,13 @@ class SessionDef:
     t3: float = 20.0          # 空闲测试超时(秒)
     k: int = 12               # 未确认I帧上限
     w: int = 8                # 触发S确认的I帧数
-    gi_period: int = 600      # 总召唤周期(秒)，0=禁用
-    clock_period: int = 30    # 校时周期(分)，0=禁用
-    call_period: int = 0      # 召唤度周期(秒)，0=禁用
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+    gi_period_min: int = 15          # 总召唤周期(分钟)，0=禁用（设备参数）
+    clock_period: int = 10           # 校时周期(分)，0=禁用（设备参数）
+    heartbeat_period: int = 30       # 心跳测试周期(秒)，仅101，0=禁用
+    call_period: int = 0             # 兼容旧字段(秒)，界面已迁出
+    gi_period: int = 900             # 兼容旧字段(秒)=gi_period_min*60，连接时仍可作兜底
+    # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
     link_ack_timeout: float = 10.0   # 链路应答超时(秒)
     cmd_timeout: float = 30.0        # 远控命令超时(秒)
     cot_size: int = 2         # 传送原因长度(字节)
@@ -76,17 +80,26 @@ class SessionDef:
     link_addr: int = 1               # 101 链路地址
     addr_size: int = 2               # 链路地址长度(1/2 字节，国内常见 2)
     balanced: bool = False           # True=平衡方式, False=非平衡方式
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+    link_mode: str = "unbalanced"    # unbalanced | balanced | hainan
+    center_id: int = 1               # 海南双主站中心编号(1~255)
+    # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
     data_frame_dir: bool = True      # 用户数据帧带 DIR 位(现场 KW-2200: 带 -> 0xF3/0xD3)
-    cs_compat: bool = True           # 可变帧校验和兼容现场(KW-2200)：控制位 bit7 取反
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+    cs_compat: bool = False          # True=校验和再 ^0x80；现场标准算法默认 False
+    # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
     poll_period: float = 1.0         # 非平衡轮询周期(秒)
     ioa_size_101: int = 2            # 101 信息体地址长度(字节，国内常见 2)
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+    ignore_fcb_error: bool = False   # True=用户数据发 FCV=0/FCB=0，兼容从站 FCB 翻转异常
+    # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionDef":
-        return cls(
+        obj = cls(
             id=str(data.get("id") or uuid.uuid4().hex[:8]),
             name=str(data.get("name") or "主站"),
             remote_ip=str(data.get("remote_ip") or "127.0.0.1"),
@@ -101,9 +114,21 @@ class SessionDef:
             t3=float(data.get("t3") or 20.0),
             k=int(data.get("k") or 12),
             w=int(data.get("w") or 8),
-            gi_period=int(data.get("gi_period") or 600),
-            clock_period=int(data.get("clock_period") or 30),
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+            gi_period_min=(
+                int(data["gi_period_min"])
+                if data.get("gi_period_min") is not None
+                else (
+                    max(0, int(data.get("gi_period") or 0) // 60)
+                    if data.get("gi_period") is not None
+                    else 15
+                )
+            ),
+            clock_period=int(data["clock_period"]) if data.get("clock_period") is not None else 10,
+            heartbeat_period=int(data["heartbeat_period"]) if data.get("heartbeat_period") is not None else 30,
             call_period=int(data.get("call_period") or 0),
+            gi_period=int(data.get("gi_period") or 900),
+            # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
             link_ack_timeout=float(data.get("link_ack_timeout") or 10.0),
             cmd_timeout=float(data.get("cmd_timeout") or 30.0),
             cot_size=int(data.get("cot_size") or 2),
@@ -121,11 +146,32 @@ class SessionDef:
             link_addr=int(data.get("link_addr") or 1),
             addr_size=int(data.get("addr_size") or 2),
             balanced=bool(data.get("balanced", False)),
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+            link_mode=(
+                str(data["link_mode"]).strip().lower()
+                if data.get("link_mode")
+                else ("balanced" if data.get("balanced") else "unbalanced")
+            ),
+            center_id=int(data["center_id"]) if data.get("center_id") is not None else 1,
+            # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
             data_frame_dir=bool(data.get("data_frame_dir", True)),
-            cs_compat=bool(data.get("cs_compat", True)),
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+            cs_compat=bool(data.get("cs_compat", False)),
+            # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
             poll_period=float(data.get("poll_period") or 1.0),
             ioa_size_101=int(data.get("ioa_size_101") or 2),
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+            ignore_fcb_error=bool(data.get("ignore_fcb_error", False)),
+            # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
         )
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        if obj.link_mode not in ("unbalanced", "balanced", "hainan"):
+            obj.link_mode = "balanced" if obj.balanced else "unbalanced"
+        # 海南双主站底层按平衡链路（仅外层 AA 封装不同）
+        obj.balanced = obj.link_mode in ("balanced", "hainan")
+        obj.center_id = max(1, min(255, int(obj.center_id or 1)))
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+        return obj
 
 
 @dataclass

@@ -44,8 +44,8 @@ class ConnectParams:
     t3: float = 20.0
     k: int = 12
     w: int = 8
-    gi_period: int = 600            # 总召唤周期(秒)，0=禁用
-    clock_period: int = 30          # 校时周期(分)，0=禁用
+    clock_period: int = 10          # 校时周期(分)，0=禁用
+    gi_period: int = 900            # 总召唤周期(秒)=设备参数分钟*60，0=禁用
     call_period: int = 0            # 召唤度周期(秒)，0=禁用
     link_ack_timeout: float = 10.0  # 链路应答超时(秒)
     cmd_timeout: float = 30.0       # 远控命令超时(秒)
@@ -829,6 +829,11 @@ class Iec104Master:
                 if p.call_period and now - self._last_call >= p.call_period:
                     self._last_call = now
                     self.general_interrogation()
+                # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+                if p.clock_period and now - self._last_clock >= float(p.clock_period) * 60.0:
+                    self._last_clock = now
+                    self.clock_sync()
+                # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
                 # T2 确认超时：收到 I 帧后未达到 W/2 触发时，定时回 S 帧确认
                 if self._ack_pending and now - self._last_i_rx > p.t2:
                     try:
@@ -838,7 +843,6 @@ class Iec104Master:
                         self._ack_pending = 0
                     except MasterError:
                         pass
-                # 时钟同步：仅在初始化时自动执行一次，其余由人工点击“时钟同步”按钮
                 # 链路应答超时：STARTDT 发出后未收到确认
                 if (
                     self._startdt_sent_at

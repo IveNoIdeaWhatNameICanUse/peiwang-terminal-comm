@@ -13,6 +13,9 @@ from protocol.iec104 import MasterError
 from protocol.iec104.const import cot_name
 
 from . import link
+# [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+from . import hainan as hainan_mux
+# [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
 
 
 class Iec101Error(MasterError):
@@ -31,9 +34,15 @@ class SerialParams:
     stopbits: int = 1
     link_addr: int = 1         # 链路地址
     addr_size: int = 1         # 链路地址长度(1/2 字节)
-    balanced: bool = False     # True=平衡方式, False=非平衡方式
+    balanced: bool = False     # True=平衡方式, False=非平衡方式（兼容旧字段）
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+    link_mode: str = ""                # unbalanced | balanced | hainan；空则由 balanced 推导
+    center_id: int = 1                 # 海南双主站中心编号 1~255
+    # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
     data_frame_dir: bool = True   # 用户数据帧带 DIR 位(现场 KW-2200: 带 -> 0xF3/0xD3)
-    cs_compat: bool = True        # 可变帧校验和兼容现场(KW-2200)：控制位 bit7 取反
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+    cs_compat: bool = False       # True=校验和再 ^0x80；KW-2200/F30 现场为标准求和，默认 False
+    # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
     poll_period: float = 1.0   # 非平衡轮询周期(秒)
     resp_timeout: float = 5.0  # 等待应答超时(秒)
     common_address: int = 1
@@ -43,12 +52,38 @@ class SerialParams:
     ioa_size: int = 2
     poll_level2: bool = True   # 轮询时召唤 2 级数据
     tx_delay_ms: float = 0.0
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+    ignore_fcb_error: bool = False  # True=用户数据 FCV=0/FCB=0，兼容从站 FCB 翻转异常
+    # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+    gi_period_min: int = 15         # 总召唤周期(分钟)，0=禁用
+    clock_period_min: int = 10      # 校时周期(分钟)，0=禁用
+    heartbeat_period: int = 30      # 心跳测试周期(秒)，0=禁用；发 FC=2(D2/F2)
+    # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
+
+    def __post_init__(self) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        mode = str(self.link_mode or "").strip().lower()
+        if mode not in ("unbalanced", "balanced", "hainan"):
+            mode = "balanced" if self.balanced else "unbalanced"
+        self.link_mode = mode
+        # 海南双主站：业务链路按平衡 101，外层再做 AA 封装
+        self.balanced = mode in ("balanced", "hainan")
+        self.center_id = max(1, min(255, int(self.center_id or 1)))
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+
+    @property
+    def is_hainan(self) -> bool:
+        return self.link_mode == "hainan"
 
 
 class Iec101Master:
     """101 主站：非平衡(主动轮询) / 平衡(双方可发起)。事件回调与 104 对齐。"""
 
-    MONITOR_TYPES = {1, 3, 5, 7, 9, 11, 13, 15, 30, 31, 36}
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 101定值回读写入四遥
+    # 与 104 对齐：55/108/202/203 定值回读也发 points，写入遥调点表
+    MONITOR_TYPES = {1, 3, 5, 7, 9, 11, 13, 15, 30, 31, 36, 55, 108, 202, 203}
+    # [AGENT_CHANGE_END] 2026-09-10 101定值回读写入四遥
 
     def __init__(self, on_event: Optional[Callable[[dict], None]] = None):
         self.on_event = on_event or (lambda _e: None)
@@ -60,6 +95,12 @@ class Iec101Master:
         self._rx_thread: Optional[threading.Thread] = None
         self._poll_thread: Optional[threading.Thread] = None
         self._init_thread: Optional[threading.Thread] = None
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+        self._timer_thread: Optional[threading.Thread] = None
+        self._last_gi = 0.0
+        self._last_clock = 0.0
+        self._last_heartbeat = 0.0
+        # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
         self._buf = bytearray()
         self._fcb = False              # 主站发送帧计数位(翻转)
         self._i_frames = 0
@@ -70,11 +111,17 @@ class Iec101Master:
         self._ack_event = threading.Event()
         self._ack_ok = False
         self._ack_note = ""            # 确认类型说明(如 链路忙)
-        self._cs_compat = True         # 可变帧校验和兼容现场(连接时取参数)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+        self._cs_compat = False        # 连接后按探测/参数更新
+        # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
         self._dir_override: Optional[bool] = None   # 探测期间临时覆盖“数据帧带DIR”
         self._saw_init_end = False     # 是否已收到从站“初始化结束”(M_EI_NA_1)
         self._peer_active_frames = 0   # 从站主动发起帧计数(49/40 等)
         self._acd = False              # 从站请求访问位
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        self._hub: Optional[hainan_mux.HainanSerialHub] = None
+        self._hub_port: str = ""
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
 
     # ---------- helpers ----------
     def _emit(self, event: dict) -> None:
@@ -118,19 +165,8 @@ class Iec101Master:
         import serial  # pyserial
 
         self.disconnect()
-        try:
-            self._ser = serial.Serial(
-                port=p.port,
-                baudrate=int(p.baudrate),
-                bytesize=int(p.bytesize),
-                parity=str(p.parity or "E"),
-                stopbits=int(p.stopbits),
-                timeout=0.2,
-            )
-        except Exception as e:  # serial.SerialException 等
-            raise Iec101Error("SERIAL_OPEN_FAILED", f"串口打开失败：{p.port} — {e}") from e
         self._params = p
-        self._cs_compat = bool(getattr(p, "cs_compat", True))
+        self._cs_compat = bool(getattr(p, "cs_compat", False))
         self._dir_override = None
         self._saw_init_end = False
         self._peer_active_frames = 0
@@ -141,18 +177,66 @@ class Iec101Master:
         self._i_msgs.clear()
         self._last_rx = time.time()
         self._last_tx = time.time()
+
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        if p.is_hainan:
+            try:
+                self._hub_port = p.port
+                self._hub = hainan_mux.HainanSerialHub.register(
+                    owner_key=self.session_id or id(self),
+                    center_id=p.center_id,
+                    port=p.port,
+                    baudrate=int(p.baudrate),
+                    bytesize=int(p.bytesize),
+                    parity=str(p.parity or "E"),
+                    stopbits=int(p.stopbits),
+                    on_payload=self._on_hainan_payload,
+                )
+            except Exception as e:
+                self._hub = None
+                raise Iec101Error("SERIAL_OPEN_FAILED", f"海南双主站串口失败：{p.port} — {e}") from e
+            self._ser = None
+            mode_txt = f"海南双主站(中心{p.center_id})"
+        else:
+            try:
+                self._ser = serial.Serial(
+                    port=p.port,
+                    baudrate=int(p.baudrate),
+                    bytesize=int(p.bytesize),
+                    parity=str(p.parity or "E"),
+                    stopbits=int(p.stopbits),
+                    timeout=0.2,
+                )
+            except Exception as e:
+                raise Iec101Error("SERIAL_OPEN_FAILED", f"串口打开失败：{p.port} — {e}") from e
+            self._hub = None
+            mode_txt = "平衡" if p.balanced else "非平衡"
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+
         self._connected = True
         self._emit({
             "type": "connection",
             "state": "connected",
             "session_id": self.session_id,
             "local": p.port,
-            "remote": f"101/{'平衡' if p.balanced else '非平衡'}",
+            "remote": f"101/{mode_txt}",
             "message": f"串口已打开 {p.port} {p.baudrate} {p.bytesize}{p.parity}{p.stopbits}"
-                       f"（{'平衡' if p.balanced else '非平衡'}方式, 链路地址={p.link_addr}）",
+                       f"（{mode_txt}, 链路地址={p.link_addr}）",
         })
-        self._rx_thread = threading.Thread(target=self._rx_loop, name="iec101-rx", daemon=True)
-        self._rx_thread.start()
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        if not p.is_hainan:
+            self._rx_thread = threading.Thread(target=self._rx_loop, name="iec101-rx", daemon=True)
+            self._rx_thread.start()
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+        now = time.time()
+        self._last_gi = now
+        self._last_clock = now
+        self._last_heartbeat = now
+        if not self._timer_thread or not self._timer_thread.is_alive():
+            self._timer_thread = threading.Thread(target=self._timer_loop, name="iec101-timer", daemon=True)
+            self._timer_thread.start()
+        # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
         # 链路初始化（复位/请求链路状态）放后台线程，避免阻塞界面
         self._init_thread = threading.Thread(target=self._init_link, name="iec101-init", daemon=True)
         self._init_thread.start()
@@ -161,6 +245,10 @@ class Iec101Master:
             self._poll_thread = threading.Thread(target=self._poll_loop, name="iec101-poll", daemon=True)
             self._poll_thread.start()
             self._log(f"101 非平衡方式：开始周期轮询召唤 2 级数据（周期 {p.poll_period:g}s）")
+        elif p.is_hainan:
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站改平衡链路
+            self._log(f"101 海南双主站：平衡链路 + AA 封装，中心编号={p.center_id}（同 COM 按编号分流）")
+            # [AGENT_CHANGE_END] 2026-09-10 海南双主站改平衡链路
         else:
             self._log("101 平衡方式：双方可发起传输（日志上送取决于从站）")
 
@@ -168,6 +256,17 @@ class Iec101Master:
         was = self._connected
         self._stop.set()
         self._connected = False
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        if self._hub is not None:
+            try:
+                hainan_mux.HainanSerialHub.unregister(
+                    self.session_id or str(id(self)), self._hub_port or (self._params.port if self._params else "")
+                )
+            except Exception:
+                pass
+            self._hub = None
+            self._hub_port = ""
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
         ser = self._ser
         self._ser = None
         if ser:
@@ -180,6 +279,9 @@ class Iec101Master:
         self._rx_thread = None
         self._poll_thread = None
         self._init_thread = None
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+        self._timer_thread = None
+        # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
         if was:
             self._emit({
                 "type": "connection",
@@ -193,26 +295,58 @@ class Iec101Master:
         return self._connected
 
     def _ensure(self) -> None:
-        if not self._connected or not self._ser:
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        if not self._connected or not self._params:
             raise Iec101Error("NOT_CONNECTED", "尚未连接从站")
+        if self._params.is_hainan:
+            if self._hub is None:
+                raise Iec101Error("NOT_CONNECTED", "尚未连接从站")
+        elif not self._ser:
+            raise Iec101Error("NOT_CONNECTED", "尚未连接从站")
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+
+    def _on_hainan_payload(self, payload: bytes) -> None:
+        """海南 Hub 分发的业务 FT1.2 字节 → 组帧处理。"""
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        if not self._connected or not self._params:
+            return
+        self._last_rx = time.time()
+        _as = self._params.addr_size
+        frames = list(link.feed(self._buf, payload, _as))
+        for frame in frames:
+            try:
+                self._handle_frame(frame)
+            except Exception:
+                pass
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
 
     def _send(self, frame: bytes, note: str = "") -> None:
         self._ensure()
         assert self._params
         if self._params.tx_delay_ms:
             time.sleep(self._params.tx_delay_ms / 1000.0)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        wire = frame
+        show_note = note
+        if self._params.is_hainan and self._hub is not None:
+            wire = hainan_mux.wrap(self._params.center_id, frame)
+            show_note = f"{note}[海南中心{self._params.center_id}]" if note else f"[海南中心{self._params.center_id}]"
         with self._lock:
             try:
-                self._ser.write(frame)
-                self._ser.flush()
+                if self._params.is_hainan and self._hub is not None:
+                    self._hub.write(self._params.center_id, frame)
+                else:
+                    self._ser.write(frame)
+                    self._ser.flush()
             except Exception as e:
                 self._connected = False
                 raise Iec101Error("SEND_FAILED", f"串口发送失败：{e}") from e
             self._last_tx = time.time()
         self._emit({
             "type": "frame", "direction": "TX",
-            "hex": codec104.hex_dump(frame), "note": note, "ts": time.time(),
+            "hex": codec104.hex_dump(wire), "note": show_note, "ts": time.time(),
         })
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
 
     def _next_fcb(self) -> bool:
         self._fcb = not self._fcb
@@ -292,8 +426,10 @@ class Iec101Master:
             self._log(f"101 链路初始化完成（从站已响应：{self._ack_note or '确认'}）")
             # 与 KW-2200 现场时序一致：链路建立后约 0.5s 即发总召唤
             time.sleep(0.5)
-            # 以现场组合(DIR=带 + 校验和兼容，= KW-2200 报文)为主重试，最后两种为兜底
-            combos = [(True, True), (True, True), (True, True), (True, False), (False, True)]
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+            # 优先标准校验和(与 KW-2200/规约分析工具一致)；兼容 ^0x80 作兜底
+            combos = [(True, False), (True, False), (True, False), (True, True), (False, False)]
+            # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
             for attempt, (use_dir, use_cs) in enumerate(combos, 1):
                 if not self._connected:
                     return
@@ -320,7 +456,7 @@ class Iec101Master:
                     return
             # 所有组合都无响应：恢复用户设置
             self._dir_override = None
-            self._cs_compat = bool(getattr(p, "cs_compat", True))
+            self._cs_compat = bool(getattr(p, "cs_compat", False))
             self._log("总召唤多次未得到从站响应：请核对从站方式(平衡/非平衡)、链路地址、波特率/校验")
         else:
             self._log("101 链路初始化：未收到从站确认（复位/链路状态已发出，继续监听）")
@@ -357,18 +493,69 @@ class Iec101Master:
             except Iec101Error:
                 pass
 
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+    def _timer_loop(self) -> None:
+        """设备参数周期：总召唤 / 校时 / 心跳(测试链路 FC=2)。"""
+        while not self._stop.is_set():
+            time.sleep(0.5)
+            if not self._connected or not self._params:
+                continue
+            p = self._params
+            now = time.time()
+            try:
+                gi_sec = int(p.gi_period_min or 0) * 60
+                if gi_sec and now - self._last_gi >= gi_sec:
+                    self._last_gi = now
+                    self.general_interrogation()
+                clk_sec = int(p.clock_period_min or 0) * 60
+                if clk_sec and now - self._last_clock >= clk_sec:
+                    self._last_clock = now
+                    self.clock_sync()
+                hb = int(p.heartbeat_period or 0)
+                if hb and now - self._last_heartbeat >= hb:
+                    self._last_heartbeat = now
+                    self.test_link()
+            except Iec101Error:
+                pass
+            except Exception:
+                pass
+
+    def test_link(self) -> None:
+        """心跳：固定帧测试链路 FC=2（平衡带 DIR：D2/F2 翻转）。"""
+        self._ensure()
+        assert self._params
+        p = self._params
+        use_dir = bool(p.data_frame_dir) if self._dir_override is None else bool(self._dir_override)
+        fcb = self._next_fcb()
+        if p.balanced and use_dir:
+            ctrl = link.ctrl_balanced(link.FC_TEST_LINK, True, fcb, True)
+        else:
+            ctrl = link.ctrl_primary(link.FC_TEST_LINK, fcb, True)
+        self._arm_ack_wait()
+        self._send_fixed(ctrl, "测试链路(心跳 FC=2)")
+        self._await_link_ack("测试链路(心跳)")
+    # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
+
     def _send_asdu(self, asdu: bytes, note: str = "", level: int = 1) -> None:
         """发送 ASDU：非平衡=用户数据(FC=3)等 ACK；平衡=用户数据(DIR=1)等确认。"""
         assert self._params
         p = self._params
         use_dir = bool(p.data_frame_dir) if self._dir_override is None else bool(self._dir_override)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+        if p.ignore_fcb_error:
+            fcb, fcv = False, False
+        else:
+            fcb, fcv = self._next_fcb(), True
         if p.balanced and use_dir:
-            ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, self._next_fcb(), True)
+            ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, fcb, fcv)
             note = note or "用户数据(平衡)"
         else:
             # 现场抓包(KW-2200)：控制 0xF3/0xD3（PRM|FCB|FCV|FC=3）或 0x73/0x53(不带 DIR)
-            ctrl = link.ctrl_primary(link.FC_USER_DATA, self._next_fcb(), True)
+            ctrl = link.ctrl_primary(link.FC_USER_DATA, fcb, fcv)
             note = note or "用户数据(FC=3)"
+        if p.ignore_fcb_error:
+            note = f"{note}[忽略FCB]"
+        # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
         frame = link.build_variable(ctrl, p.link_addr, asdu, p.addr_size, cs_compat=self._cs_compat)
         self._arm_ack_wait()
         self._send(frame, note)

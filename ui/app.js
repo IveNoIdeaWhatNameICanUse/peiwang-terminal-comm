@@ -267,6 +267,17 @@
       appendFrame(ev);
     } else if (ev.type === "points") {
       renderPoints();
+    // [AGENT_CHANGE_BEGIN] 2026-09-10 固化撤销清修改值
+    } else if (ev.type === "cmd_result") {
+      if (ev.ok) {
+        appAlert("命令结果", ev.text || "");
+        if (ev.clear_modvals || ev.commit_modvals) {
+          document.querySelectorAll("[data-mod]").forEach((td) => { td.textContent = ""; });
+        }
+      } else {
+        appAlert("命令失败", ev.text || "");
+      }
+    // [AGENT_CHANGE_END] 2026-09-10 固化撤销清修改值
     }
   };
 
@@ -340,8 +351,20 @@
           [`轮询周期(秒)`, `<input id="p_poll_period" type="number" step="0.1" value="${s.poll_period || 1.0}" style="width:100px;" />`],
           [`链路应答超时(秒)`, `<input id="p_link_ack_timeout" type="number" step="1" value="${s.link_ack_timeout || 10}" style="width:100px;" />`],
           [`信息体地址长度(字节)`, `<select id="p_ioa_size_101"><option value="2"${sel(2, s.ioa_size_101 || 2)}>2</option><option value="3"${sel(3, s.ioa_size_101)}>3</option></select>`],
-          [`平衡方式`, `<label style="font-weight:normal;"><input id="p_balanced" type="checkbox"${s.balanced ? " checked" : ""} /> 勾选=平衡（不勾=非平衡周期轮询）</label>`],
-          [`数据帧格式`, `<span style="font-weight:normal;color:#666;">连接后自动探测（带DIR+兼容 / 不带DIR+兼容 / 带DIR+标准），哪种有响应即采用</span>`],
+          /* [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装 */
+          [`链路模式`, (() => {
+            const m = s.link_mode || (s.balanced ? "balanced" : "unbalanced");
+            return `<select id="p_link_mode">
+              <option value="unbalanced"${m === "unbalanced" ? " selected" : ""}>非平衡</option>
+              <option value="balanced"${m === "balanced" ? " selected" : ""}>平衡</option>
+              <option value="hainan"${m === "hainan" ? " selected" : ""}>海南双主站</option>
+            </select>`;
+          })()],
+          [`中心编号(1~255)`, `<input id="p_center_id" type="number" min="1" max="255" value="${s.center_id || 1}" style="width:100px;" /> <span style="color:#666;font-size:12px;">海南双主站同COM分流，默认1/2</span>`],
+          /* [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装 */
+          /* [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误 */
+          [`忽略 FCB 位错误`, `<label style="font-weight:normal;"><input id="p_ignore_fcb_error" type="checkbox"${s.ignore_fcb_error ? " checked" : ""} /> 勾选后用户数据发 FCV=0（兼容从站 FCB 翻转异常）</label>`],
+          /* [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误 */
         ];
         $("modalTitle").textContent = "101 参数设置 - " + (s.name || "");
         $("modalBody").innerHTML = fields
@@ -350,6 +373,7 @@
         const ok101 = $("modalOk");
         ok101.textContent = "保存";
         const handler101 = async () => {
+          const linkMode = $("p_link_mode").value || "unbalanced";
           const data = {
             serial_port: $("p_serial_port").value,
             baudrate: Number($("p_baudrate").value || 9600),
@@ -360,7 +384,14 @@
             poll_period: Number($("p_poll_period").value || 1.0),
             link_ack_timeout: Number($("p_link_ack_timeout").value || 10),
             ioa_size_101: Number($("p_ioa_size_101").value || 2),
-            balanced: $("p_balanced").checked,
+            // [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+            link_mode: linkMode,
+            balanced: linkMode === "balanced",
+            center_id: Number($("p_center_id").value || 1),
+            // [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+            // [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+            ignore_fcb_error: $("p_ignore_fcb_error").checked,
+            // [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
             protocol: "101",          // 保存 101 参数即确认使用 101
           };
           await api("update_session", curSid, data);
@@ -376,7 +407,7 @@
         ["T0 连接超时(秒)", "t0", 30], ["T1 发送/测试超时(秒)", "t1", 15],
         ["T2 确认超时(秒)", "t2", 10], ["T3 空闲测试超时(秒)", "t3", 20],
         ["K 未确认I帧上限", "k", 12], ["W 触发S确认帧数", "w", 8],
-        ["总召唤周期(秒,0=禁用)", "gi_period", 600], ["校时周期(分,0=禁用)", "clock_period", 30],
+        ["链路应答超时(秒)", "link_ack_timeout", 10], ["远控命令超时(秒)", "cmd_timeout", 30],
       ];
       const vals = {};
       const lines = rows.map(([label, key, def]) => {
@@ -401,6 +432,37 @@
 
     $("btnParams").onclick = () => openSessionParams("104");
     $("btnParams101").onclick = () => openSessionParams("101");
+
+    // [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+    $("btnDeviceParams").onclick = async () => {
+      const s = (await api("get_project")).sessions.find((x) => x.id === curSid) || {};
+      const is101 = ($("protocolSel").value || s.protocol || "104") === "101";
+      let html =
+        `<div>时钟同步周期（分钟，0=禁用）：<input id="d_clock_period" type="number" value="${s.clock_period ?? 10}" style="width:100px;" /></div><br/>` +
+        `<div>总召唤周期（分钟，0=禁用）：<input id="d_gi_period_min" type="number" value="${s.gi_period_min ?? 15}" style="width:100px;" /></div>`;
+      if (is101) {
+        html += `<br/><div>心跳测试周期（秒，0=禁用）：<input id="d_heartbeat_period" type="number" value="${s.heartbeat_period ?? 30}" style="width:100px;" /></div>` +
+          `<br/><div style="color:#666;font-size:12px;">心跳：测试链路 FC=2（平衡帧 10 D2/F2 …）</div>`;
+      }
+      $("modalTitle").textContent = "设备参数 - " + (s.name || "");
+      $("modalBody").innerHTML = html;
+      $("modalMask").classList.remove("hidden");
+      const ok = $("modalOk");
+      ok.textContent = "保存";
+      const handler = async () => {
+        const data = {
+          clock_period: Number($("d_clock_period").value || 0),
+          gi_period_min: Number($("d_gi_period_min").value || 0),
+        };
+        if (is101) data.heartbeat_period = Number($("d_heartbeat_period").value || 0);
+        await api("update_session", curSid, data);
+        ok.removeEventListener("click", handler);
+        ok.textContent = "确定";
+        $("modalMask").classList.add("hidden");
+      };
+      ok.addEventListener("click", handler);
+    };
+    // [AGENT_CHANGE_END] 2026-09-10 设备参数周期
 
     $("btnGI").onclick = async () => {
       const r = await api("general_interrogation");

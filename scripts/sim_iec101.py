@@ -321,10 +321,12 @@ def run(unbalanced: bool):
     check(any(len(h.split(" ")) > 6 and h.split(" ")[4] in want_c for h in raw),
           f"frame format: user-data control byte = 0x{want_c[0]}/0x{want_c[1]}",
           str([h[:23] for h in raw if h.startswith("68")][:2]))
-    # 校验和：现场算法(标准^0x80)与标准算法都应被接受
+    # 校验和：标准=sum(用户数据)；兼容=再^0x80
     var = [f for f in sim.rx_frames if f and f[0] == 0x68]
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
     bad_cs = [f.hex(" ").upper() for f in var
-              if f[-2] not in ((sum(f[1:-2]) & 0xFF), (sum(f[1:-2]) & 0xFF) ^ 0x80)]
+              if f[-2] not in ((sum(f[4:-2]) & 0xFF), (sum(f[4:-2]) & 0xFF) ^ 0x80)]
+    # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
     check(bool(var) and not bad_cs, "variable frame checksum valid (standard or field algorithm)",
           str(bad_cs[:1]))
     fixed = [f for f in sim.rx_frames if f and f[0] == 0x10]
@@ -420,11 +422,21 @@ def run_field_frame_check():
           "field capture (GI) parses, checksum accepted (field algorithm)")
     asdu = codec104.build_interrogation(CA, oa=0, cot_size=2, ca_size=2, ioa_size=2)
     ctrl = link.ctrl_balanced(link.FC_USER_DATA, True, True, True)
-    ours = link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE, cs_compat=True)
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+    ours = link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE, cs_compat=False)
     check(ours == field_gi, "our GI frame is byte-identical to KW-2200 capture",
           f"ours={ours.hex(' ').upper()} field={field_gi.hex(' ').upper()}")
-    std = link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE, cs_compat=False)
-    check(std[-2] ^ 0x80 == field_gi[-2], "standard checksum differs by 0x80 (as observed on site)")
+    compat = link.build_variable(ctrl, ADDR, asdu, ADDR_SIZE, cs_compat=True)
+    check(compat[-2] == field_gi[-2] ^ 0x80, "compat checksum = standard ^ 0x80",
+          f"compat={compat[-2]:02X} field={field_gi[-2]:02X}")
+    # 对时 L=18：标准 CS 必须等于 sum(用户数据)，不能把 L/L/68 算进去
+    clock_asdu = codec104.build_clock_sync(CA, oa=0, cot_size=2, ca_size=2, ioa_size=2)
+    clock_fr = link.build_variable(ctrl, ADDR, clock_asdu, ADDR_SIZE, cs_compat=False)
+    clock_user = clock_fr[4:-2]
+    check(clock_fr[-2] == (sum(clock_user) & 0xFF),
+          "clock-sync L=18 checksum = sum(user data) only",
+          f"cs={clock_fr[-2]:02X} expect={(sum(clock_user)&0xFF):02X} frame={clock_fr.hex(' ').upper()}")
+    # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
     field_mei = bytes.fromhex("68 0C 0C 68 73 01 00 46 01 04 00 01 00 00 00 02 C2 16")
     check(link.parse_frame(field_mei, ADDR_SIZE)["cs_ok"],
           "field capture (slave M_EI_NA_1) parses, checksum accepted")

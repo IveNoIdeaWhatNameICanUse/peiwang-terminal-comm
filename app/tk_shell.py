@@ -319,7 +319,17 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         poll_var2 = gv("poll_period", 1.0)
         ack_var = gv("link_ack_timeout", 10.0)
         ioa_var2 = gv("ioa_size_101", 2)
-        bal_var2 = tk.BooleanVar(value=bool(sess.get("balanced", False)))
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        _mode0 = str(sess.get("link_mode") or (
+            "balanced" if sess.get("balanced") else "unbalanced"
+        ))
+        _mode_labels = {"unbalanced": "非平衡", "balanced": "平衡", "hainan": "海南双主站"}
+        mode_var = tk.StringVar(value=_mode_labels.get(_mode0, "非平衡"))
+        center_var = gv("center_id", 1)
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+        ignore_fcb_var = tk.BooleanVar(value=bool(sess.get("ignore_fcb_error", False)))
+        # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
 
         ttk.Label(dlg, text="101 串口 / 链路（保存后重新连接生效）", font=("", 10, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 4)
@@ -359,19 +369,41 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                                                        values=["2", "3"], width=6, state="readonly"))
         txd_var2 = gv("tx_delay_ms", 200.0)
         add_row(10, "发送间隔(毫秒)", ttk.Entry(dlg, textvariable=txd_var2, width=14))
-        ttk.Checkbutton(dlg, text="平衡方式（不勾选=非平衡周期轮询）", variable=bal_var2).grid(
-            row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 0)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        mode_combo = ttk.Combobox(
+            dlg, textvariable=mode_var, values=["非平衡", "平衡", "海南双主站"],
+            width=14, state="readonly",
         )
-        ttk.Label(dlg, text="数据帧格式（DIR/校验和）连接后自动探测：\n"
-                            "依次试「带DIR+兼容」「不带DIR+兼容」「带DIR+标准」，\n"
-                            "哪种得到从站响应即自动采用（报文监视会提示）。\n"
-                            "链路层确认最多等 1.5s（后台等待，不卡界面）。",
-                  foreground="#666", justify=tk.LEFT).grid(
-            row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0)
-        )
+        add_row(11, "链路模式", mode_combo)
+        ttk.Label(dlg, text="中心编号(1~255)").grid(row=12, column=0, sticky="w", padx=6, pady=2)
+        center_entry = ttk.Entry(dlg, textvariable=center_var, width=14)
+        center_entry.grid(row=12, column=1, sticky="w", padx=6, pady=2)
+        center_hint = ttk.Label(dlg, text="同 COM 多主站按编号分流（默认 1/2）", foreground="#666")
+        center_hint.grid(row=12, column=2, sticky="w", padx=4)
+
+        def _toggle_center(*_a):
+            show = mode_var.get() == "海南双主站"
+            st = "normal" if show else "disabled"
+            center_entry.configure(state=st)
+            center_hint.configure(foreground="#666" if show else "#bbb")
+
+        mode_var.trace_add("write", _toggle_center)
+        _toggle_center()
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+        ttk.Checkbutton(
+            dlg,
+            text="忽略 FCB 位错误（发送用户数据时 FCV=0，兼容从站 FCB 翻转异常）",
+            variable=ignore_fcb_var,
+        ).grid(row=13, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
+        # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
 
         def save_params():
             try:
+                # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+                _lab2mode = {"非平衡": "unbalanced", "平衡": "balanced", "海南双主站": "hainan"}
+                link_mode = _lab2mode.get(mode_var.get(), "unbalanced")
+                # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
                 data = {
                     "serial_port": port_var2.get().strip() or "COM1",
                     "baudrate": int(baud_var2.get() or 9600),
@@ -382,7 +414,14 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                     "poll_period": float(poll_var2.get() or 1.0),
                     "link_ack_timeout": float(ack_var.get() or 10.0),
                     "ioa_size_101": int(ioa_var2.get() or 2),
-                    "balanced": bool(bal_var2.get()),
+                    # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+                    "link_mode": link_mode,
+                    "balanced": link_mode == "balanced",
+                    "center_id": int(center_var.get() or 1),
+                    # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+                    # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+                    "ignore_fcb_error": bool(ignore_fcb_var.get()),
+                    # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
                     "tx_delay_ms": float(txd_var2.get() or 0),
                     "protocol": "101",          # 保存 101 参数即确认使用 101
                 }
@@ -395,10 +434,10 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             status.set(f"101 参数已保存（{data['serial_port']} {data['baudrate']}）")
 
         bt = ttk.Frame(dlg)
-        bt.grid(row=13, column=0, columnspan=2, pady=6)
+        bt.grid(row=14, column=0, columnspan=2, pady=6)
         ttk.Button(bt, text="保存", command=save_params).pack(side=tk.LEFT, padx=6)
         ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
-        _fit_dialog(dlg, min_w=440, min_h=420)
+        _fit_dialog(dlg, min_w=480, min_h=460)
 
     def open_params_dialog():
         # 104 参数设置（KW-2200 风格），保存到当前主站，重新连接后生效
@@ -429,15 +468,12 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             ("T3 空闲测试超时(秒)", "t3", 20.0, float),
             ("K 未确认I帧上限", "k", 12, int),
             ("W 触发S确认帧数", "w", 8, int),
-            ("总召唤周期(秒,0=禁用)", "gi_period", 600, int),
-            ("校时周期(分,0=禁用)", "clock_period", 30, int),
-            ("召唤度周期(秒,0=禁用)", "call_period", 0, int),
             ("链路应答超时(秒)", "link_ack_timeout", 10.0, float),
             ("远控命令超时(秒)", "cmd_timeout", 30.0, float),
             ("发送延时(毫秒)", "tx_delay_ms", 0.0, float),
         ]
         vars_map = {}
-        ttk.Label(dlg, text="104控制 / 周期 / 超时", font=("", 10, "bold")).grid(
+        ttk.Label(dlg, text="104 控制 / 超时", font=("", 10, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 2)
         )
         r = 1
@@ -516,6 +552,68 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         if sess:
             open_101_params_dialog(sess, sid)
 
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+    def open_device_params_dialog():
+        """设备参数：总召/校时/心跳周期（101/104 共用；心跳仅 101 显示）。"""
+        sid = current_sid()
+        if not sid:
+            messagebox.showwarning("提示", "请先选择主站")
+            return
+        sess = next((x for x in (api.list_sessions().get("sessions") or []) if x["id"] == sid), None)
+        if not sess:
+            return
+        is101 = (sess.get("protocol") or "104") == "101" or (proto_var.get() == "101")
+
+        dlg = tk.Toplevel(win)
+        dlg.title(f"设备参数 - {sess.get('name')}")
+        dlg.transient(win)
+        dlg.withdraw()
+
+        def gv(key, default):
+            return tk.StringVar(value=str(sess.get(key, default)))
+
+        clock_v = gv("clock_period", 10)
+        gi_v = gv("gi_period_min", 15)
+        hb_v = gv("heartbeat_period", 30)
+
+        ttk.Label(dlg, text="周期任务（保存后重新连接生效；0=禁用）", font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 4)
+        )
+        ttk.Label(dlg, text="时钟同步周期（分钟）").grid(row=1, column=0, sticky="w", padx=6, pady=2)
+        ttk.Entry(dlg, textvariable=clock_v, width=12).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+        ttk.Label(dlg, text="总召唤周期（分钟）").grid(row=2, column=0, sticky="w", padx=6, pady=2)
+        ttk.Entry(dlg, textvariable=gi_v, width=12).grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        hb_row = 3
+        if is101:
+            ttk.Label(dlg, text="心跳测试周期（秒）").grid(row=3, column=0, sticky="w", padx=6, pady=2)
+            ttk.Entry(dlg, textvariable=hb_v, width=12).grid(row=3, column=1, sticky="w", padx=6, pady=2)
+            ttk.Label(dlg, text="心跳：测试链路 FC=2（平衡帧 10 D2/F2 …）", foreground="#666").grid(
+                row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 0)
+            )
+            hb_row = 5
+
+        def save_dev():
+            try:
+                data = {
+                    "clock_period": int(clock_v.get() or 0),
+                    "gi_period_min": int(gi_v.get() or 0),
+                }
+                if is101:
+                    data["heartbeat_period"] = int(hb_v.get() or 0)
+                api.update_session(sid, data)
+            except ValueError as e:
+                messagebox.showerror("参数错误", str(e), parent=dlg)
+                return
+            dlg.destroy()
+            status.set("设备参数已保存（重新连接后生效）")
+
+        bt = ttk.Frame(dlg)
+        bt.grid(row=hb_row, column=0, columnspan=2, pady=8)
+        ttk.Button(bt, text="保存", command=save_dev).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bt, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
+        _fit_dialog(dlg, min_w=380, min_h=220 if is101 else 180)
+    # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
+
     btns = ttk.Frame(conn)
     btns.grid(row=3, column=0, columnspan=6, sticky="w", pady=6)
     ttk.Button(btns, text="连接", command=do_connect).pack(side=tk.LEFT, padx=3)
@@ -529,6 +627,9 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     param_btns["104"].pack(side=tk.LEFT, padx=3)
     param_btns["101"] = ttk.Button(btns, text="101 参数设置", command=open_101_params_for_current)
     param_btns["101"].pack(side=tk.LEFT, padx=3)
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+    ttk.Button(btns, text="设备参数", command=open_device_params_dialog).pack(side=tk.LEFT, padx=3)
+    # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
     try:
         on_proto_change()      # 按当前协议启用对应按钮
     except tk.TclError:
@@ -1636,6 +1737,23 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             api.upsert_point({**p, "value": val}, sid=sid)
         reload_points()
 
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 固化撤销清修改值
+    def _clear_modvals():
+        """固化成功或撤销成功后：清空遥调「修改值」列。"""
+        sid = current_station_sid()
+        view = station_views.get(sid)
+        if not view:
+            return
+        view["modvals"] = {}
+        tree = (view.get("trees") or {}).get("遥调")
+        if tree is not None:
+            for iid in tree.get_children():
+                try:
+                    tree.set(iid, "modval", "")
+                except tk.TclError:
+                    pass
+    # [AGENT_CHANGE_END] 2026-09-10 固化撤销清修改值
+
     def poll_events():
         try:
             while True:
@@ -1674,6 +1792,10 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                         messagebox.showinfo("命令结果", text, parent=win)
                         if ev.get("commit_modvals"):
                             _commit_modvals()
+                        # [AGENT_CHANGE_BEGIN] 2026-09-10 固化撤销清修改值
+                        if ev.get("clear_modvals") or ev.get("commit_modvals"):
+                            _clear_modvals()
+                        # [AGENT_CHANGE_END] 2026-09-10 固化撤销清修改值
                     else:
                         messagebox.showerror("命令失败", text, parent=win)
         except queue.Empty:

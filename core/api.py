@@ -88,9 +88,6 @@ class ApiBridge:
         self._ui_push: Optional[Callable[[dict], None]] = None
         self._frames: List[dict] = []
         self._lock = threading.Lock()
-        # 101 会话自动落盘：连接期间的收发报文写入桌面文件，便于现场取证
-        self._auto_logs: Dict[str, List[str]] = {}
-        self._auto_names: Dict[str, str] = {}
         default_cfg = root / "configs" / "default.json"
         if not default_cfg.exists() and getattr(sys, "frozen", False):
             # 打包运行：exe 目录无配置时回退到包内默认（_MEIPASS），保存仍写 exe 目录
@@ -122,38 +119,7 @@ class ApiBridge:
             self._event_logs[sid] = EventLog()
         return self._event_logs[sid]
 
-    def _auto_log_target(self, name: str) -> Path:
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        base = Path.home() / "Desktop"
-        if not base.exists():
-            base = Path.home()
-        safe = "".join(ch for ch in str(name) if ch not in '\\/:*?"<>|') or "session"
-        return base / f"配网终端通讯_101报文_{safe}_{stamp}.txt"
-
-    @staticmethod
-    def _fmt_auto_log(event: dict) -> str:
-        ts = float(event.get("ts") or time.time())
-        t = time.strftime("%H:%M:%S", time.localtime(ts)) + f".{int((ts % 1) * 1000):03d}"
-        if event.get("type") == "frame":
-            return f"[{t}] {event.get('direction', '')} {event.get('note', '')}\n    {event.get('hex', '')}"
-        return f"[{t}] === {event.get('text', '')}"
-
-    def _flush_auto_log(self, sid: str) -> None:
-        buf = self._auto_logs.pop(sid, None)
-        name = self._auto_names.pop(sid, sid)
-        if not buf:
-            return
-        try:
-            path = self._auto_log_target(name)
-            head = (f"# 101 会话报文记录\n# 会话：{name}\n"
-                    f"# 导出时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"# 共 {len(buf)} 条\n\n")
-            path.write_text(head + "\n".join(buf) + "\n", encoding="utf-8")
-            self._push({"type": "log", "session_id": sid, "ts": time.time(),
-                        "text": f"本次 101 报文已自动保存：{path}"})
-        except Exception:
-            pass
-
+    # [AGENT_CHANGE_BEGIN] 2026-09-10 删除101自动保存报文到桌面
     def _on_master_event(self, event: dict) -> None:
         if event.get("type") == "connection":
             sid = str(event.get("session_id") or self.store.config.active_session_id)
@@ -162,18 +128,10 @@ class ApiBridge:
                 self._init_pending[sid] = True
                 self._init_since[sid] = time.time()
                 self._event_log(sid).on_link("start")
-                sess = next((s for s in self.store.config.sessions if s.id == sid), None)
-                if sess is not None and getattr(sess, "protocol", "104") == "101":
-                    self._auto_logs[sid] = []          # 开始记录本次 101 通信
-                    self._auto_names[sid] = sess.name or sid
             elif st == "disconnected":
                 self._init_pending.pop(sid, None)
                 self._event_log(sid).on_link("stop")
-                self._flush_auto_log(sid)              # 断开时写盘
-        if event.get("type") in ("frame", "log"):
-            sid_a = str(event.get("session_id") or self.store.config.active_session_id)
-            if sid_a in self._auto_logs and len(self._auto_logs[sid_a]) < 20000:
-                self._auto_logs[sid_a].append(self._fmt_auto_log(event))
+        # [AGENT_CHANGE_END] 2026-09-10 删除101自动保存报文到桌面
         if event.get("type") == "frame":
             with self._lock:
                 self._frames.append(event)
@@ -346,6 +304,17 @@ class ApiBridge:
             originator=int(data.get("originator") or 0),
             protocol=str(data.get("protocol") or "104"),
         )
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+        used_cid = {
+            int(getattr(x, "center_id", 1) or 1)
+            for x in self.store.config.sessions
+            if getattr(x, "protocol", "104") == "101"
+        }
+        cid = 1
+        while cid in used_cid:
+            cid += 1
+        s.center_id = cid
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
         self.store.config.sessions.append(s)
         # 新主站复制当前主站的点表作为初始模板（此后各自独立）
         template = list(self.store.config.session_points(self.store.config.active_session_id))
@@ -377,11 +346,16 @@ class ApiBridge:
             for key, conv in {
                 "t0": float, "t1": float, "t2": float, "t3": float,
                 "link_ack_timeout": float, "cmd_timeout": float, "tx_delay_ms": float,
-                "gi_period": int, "clock_period": int, "call_period": int,
+                "gi_period": int, "gi_period_min": int, "clock_period": int,
+                "heartbeat_period": int, "call_period": int,
                 "cot_size": int, "ca_size": int, "ioa_size": int, "read_cot": int,
             }.items():
                 if key in data:
                     setattr(s, key, conv(data[key]))
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+            if "gi_period_min" in data:
+                s.gi_period = int(s.gi_period_min or 0) * 60
+            # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
             if "k" in data:
                 s.k = int(data["k"])
             if "w" in data:
@@ -417,6 +391,23 @@ class ApiBridge:
                 s.cs_compat = bool(data["cs_compat"])
             if "balanced" in data:
                 s.balanced = bool(data["balanced"])
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+            if "link_mode" in data:
+                mode = str(data["link_mode"] or "unbalanced").strip().lower()
+                if mode not in ("unbalanced", "balanced", "hainan"):
+                    mode = "balanced" if data.get("balanced") else "unbalanced"
+                s.link_mode = mode
+                # 海南双主站底层按平衡链路
+                s.balanced = mode in ("balanced", "hainan")
+            elif "balanced" in data:
+                s.link_mode = "balanced" if s.balanced else "unbalanced"
+            if "center_id" in data:
+                s.center_id = max(1, min(255, int(data["center_id"] or 1)))
+            # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+            # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+            if "ignore_fcb_error" in data:
+                s.ignore_fcb_error = bool(data["ignore_fcb_error"])
+            # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
             if "poll_period" in data:
                 s.poll_period = float(data["poll_period"] or 1.0)
             if proto_changed:
@@ -702,8 +693,16 @@ class ApiBridge:
                     link_addr=_la,
                     addr_size=_as,
                     balanced=bool(getattr(s, "balanced", False)),
+                    # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
+                    link_mode=str(getattr(s, "link_mode", "") or (
+                        "balanced" if getattr(s, "balanced", False) else "unbalanced"
+                    )),
+                    center_id=int(getattr(s, "center_id", 1) or 1),
+                    # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
                     data_frame_dir=bool(getattr(s, "data_frame_dir", True)),
-                    cs_compat=bool(getattr(s, "cs_compat", True)),
+                    # [AGENT_CHANGE_BEGIN] 2026-09-10 101可变帧校验和按用户数据求和
+                    cs_compat=bool(getattr(s, "cs_compat", False)),
+                    # [AGENT_CHANGE_END] 2026-09-10 101可变帧校验和按用户数据求和
                     poll_period=float(getattr(s, "poll_period", 1.0) or 1.0),
                     resp_timeout=float(getattr(s, "link_ack_timeout", 10.0) or 10.0),
                     common_address=s.common_address,
@@ -713,6 +712,14 @@ class ApiBridge:
                     ioa_size=int(getattr(s, "ioa_size_101", 2) or 2),
                     # 现场（KW-2200）发送间隔 200ms；未配置时取 200
                     tx_delay_ms=float(getattr(s, "tx_delay_ms", 0.0) or 0.0) or 200.0,
+                    # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
+                    ignore_fcb_error=bool(getattr(s, "ignore_fcb_error", False)),
+                    # [AGENT_CHANGE_END] 2026-09-10 忽略FCB位错误
+                    # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+                    gi_period_min=int(getattr(s, "gi_period_min", 15) or 0),
+                    clock_period_min=int(getattr(s, "clock_period", 10) or 0),
+                    heartbeat_period=int(getattr(s, "heartbeat_period", 30) or 0),
+                    # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
                 )
                 self._ensure_master(s.id).connect(sp)
                 return {"ok": True, "message": "串口连接成功", "session_id": s.id}
@@ -741,9 +748,11 @@ class ApiBridge:
                 t3=float(getattr(s, "t3", 20.0) or 20.0),
                 k=int(getattr(s, "k", 12) or 12),
                 w=int(getattr(s, "w", 8) or 8),
-                gi_period=int(getattr(s, "gi_period", 600) or 0),
-                clock_period=int(getattr(s, "clock_period", 30) or 0),
+                # [AGENT_CHANGE_BEGIN] 2026-09-10 设备参数周期
+                gi_period=int(getattr(s, "gi_period_min", 15) or 0) * 60,
+                clock_period=int(getattr(s, "clock_period", 10) or 0),
                 call_period=int(getattr(s, "call_period", 0) or 0),
+                # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
                 link_ack_timeout=float(getattr(s, "link_ack_timeout", 10.0) or 10.0),
                 cmd_timeout=float(getattr(s, "cmd_timeout", 30.0) or 30.0),
                 cot_size=int(getattr(s, "cot_size", 2) or 2),
@@ -929,11 +938,14 @@ class ApiBridge:
             cots = (7,)  # 固化：激活(6) → 激活确认(7)
             ok_text = "固化(激活)成功"
         self._record_adjust(ioa, "preset" if select else "exec", value)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 固化撤销清修改值
         return self._cmd_confirm(
             lambda m: m.preset_param(int(ioa), float(value), bool(select), tid=tid, area=int(area)),
             type_ids=(tid,), cots=cots,
             ok_text=ok_text,
+            clear_modvals=not select,  # 固化成功后清空「修改值」
         )
+        # [AGENT_CHANGE_END] 2026-09-10 固化撤销清修改值
 
     def fix_setpoint(self, area: int = 1) -> dict:
         """国网定值固化：无需选中点/值——203 VSQ=0 + 区号(2B) + PI=00(S/E=0)，COT=6。
@@ -951,11 +963,14 @@ class ApiBridge:
         国网 203 撤销报文无信息体地址(整区撤销)，ioa 传 0 即可。"""
         tid = 203 if self.store.config.protocol_variant == "国网" else 55
         self._record_adjust(ioa, "cancel", None)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 固化撤销清修改值
         return self._cmd_confirm(
             lambda m: m.preset_param(int(ioa), 0.0, select=False, cancel=True, tid=tid, area=int(area)),
             type_ids=(tid,), cots=(9, 7),
             ok_text="撤销成功",
+            clear_modvals=True,
         )
+        # [AGENT_CHANGE_END] 2026-09-10 固化撤销清修改值
 
     def read_setting_area(self) -> dict:
         """读定值区号(C_RR_NA_1=201，国网)。"""
@@ -1005,7 +1020,7 @@ class ApiBridge:
             return {"ok": False, "code": "UNEXPECTED", "error": str(e)}
 
     def _cmd_confirm(self, send_fn, type_ids: tuple, cots: tuple, ok_text: str,
-                     commit_modvals: bool = False) -> dict:
+                     commit_modvals: bool = False, clear_modvals: bool = False) -> dict:
         """发送命令并在后台等待从站确认帧，完成后推送 cmd_result 事件（UI 弹窗）。"""
         try:
             m = self._active_master()
@@ -1037,8 +1052,13 @@ class ApiBridge:
                     "text": "从站返回否定确认：命令被拒绝（传送原因 %s）" % r.get("cot"),
                 })
             else:
-                self._push({"type": "cmd_result", "ok": True, "text": ok_text,
-                            "commit_modvals": commit_modvals})
+                # [AGENT_CHANGE_BEGIN] 2026-09-10 固化撤销清修改值
+                self._push({
+                    "type": "cmd_result", "ok": True, "text": ok_text,
+                    "commit_modvals": commit_modvals,
+                    "clear_modvals": clear_modvals or commit_modvals,
+                })
+                # [AGENT_CHANGE_END] 2026-09-10 固化撤销清修改值
 
         threading.Thread(target=_run, daemon=True).start()
         return {"ok": True}
