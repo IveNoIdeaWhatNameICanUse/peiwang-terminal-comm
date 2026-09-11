@@ -309,10 +309,22 @@
         else await appAlert("导入失败", r.error || "");
       } catch (e) {
         // webview 无法上传原路径：提示
-        await appAlert("导入配置", "WebView 模式请将配置文件路径设为当前目录后手动处理，或用 Tk 界面导入。\n" + e);
+        await appAlert("导入工程", "WebView 模式请将配置文件路径设为当前目录后手动处理，或用 Tk 界面导入。\n" + e);
       }
       $("importFile").value = "";
     };
+    // [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
+    $("btnNewProject").onclick = async () => {
+      if (!confirm("将断开全部连接并清空当前会话/点表，未保存的修改会丢失。是否继续？")) return;
+      const r = await api("new_project");
+      if (!r.ok) await appAlert("新建失败", r.error || "");
+      else {
+        await refreshSessions();
+        setConnected(false);
+        await appAlert("新建工程", "已创建空白工程（请用「保存工程」落盘）");
+      }
+    };
+    // [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
 
     $("btnConnect").onclick = async () => {
       const r = await api("connect", collectParams());
@@ -330,9 +342,14 @@
       if (curSid) await api("update_session", curSid, { protocol: $("protocolSel").value });
     };
     $("btnSave").onclick = async () => {
-      const r = await api("save_project", await api("get_project"), "");
+      // [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
+      const name = prompt("请输入工程名称（可含路径；默认 .json）", "未命名工程");
+      if (!name) return;
+      const path = /\.json$/i.test(name) ? name : `${name}.json`;
+      const r = await api("save_project", await api("get_project"), path);
       if (!r.ok) await appAlert("保存失败", r.error || "");
       else await appAlert("已保存", r.path || "");
+      // [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
     };
     async function openSessionParams(forceProto) {
       const s = (await api("get_project")).sessions.find((x) => x.id === curSid) || {};

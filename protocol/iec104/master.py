@@ -92,6 +92,9 @@ class Iec104Master:
         self._testfr_waiting = False       # 已发 TESTFR，等待从站确认
         self._testfr_sent_at = 0.0
         self._last_call = 0.0
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 104静默无限重连
+        self._reconnect_thread: Optional[threading.Thread] = None
+        # [AGENT_CHANGE_END] 2026-09-11 104静默无限重连
 
     @property
     def connected(self) -> bool:
@@ -531,7 +534,7 @@ class Iec104Master:
             try:
                 data = sock.recv(4096)
                 if not data:
-                    self._log("链路断开：对端(从站)关闭了连接，3s 后自动重连")
+                    self._log("链路断开：对端(从站)关闭了连接")
                     self._emit(
                         {
                             "type": "connection",
@@ -596,7 +599,7 @@ class Iec104Master:
                 continue
             except OSError as e:
                 if not self._stop.is_set():
-                    self._log(f"链路断开：接收中断（{e}），3s 后自动重连")
+                    self._log(f"链路断开：接收中断（{e}）")
                     self._emit(
                         {
                             "type": "connection",
@@ -613,9 +616,10 @@ class Iec104Master:
                 self._sock = None
                 break
         self._connected = False
-        # 超时断线自动重连（最多 3 次）
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 104静默无限重连
         if self._params and self._params.auto_reconnect and not self._stop.is_set():
-            threading.Thread(target=self._reconnect_loop, args=(self._params,), name="iec104-reconnect", daemon=True).start()
+            self._start_reconnect(self._params)
+        # [AGENT_CHANGE_END] 2026-09-11 104静默无限重连
 
     def _consume_buffer(self) -> None:
         while True:
@@ -877,24 +881,48 @@ class Iec104Master:
             except MasterError:
                 pass
 
+    def _start_reconnect(self, params: ConnectParams) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 104静默无限重连
+        t = self._reconnect_thread
+        if t is not None and t.is_alive():
+            return
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_loop, args=(params,), name="iec104-reconnect", daemon=True
+        )
+        self._reconnect_thread.start()
+        # [AGENT_CHANGE_END] 2026-09-11 104静默无限重连
+
     def _reconnect_loop(self, params: ConnectParams) -> None:
-        for i in range(3):
-            time.sleep(3)
-            if self._stop.is_set() or self._connected:
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 104静默无限重连
+        # 不限次数；每 5s：未连接则静默 TCP 重连（connect 内发启动帧），
+        # 已连接未收到启动确认则补发启动帧；直到从站 STARTDT con 或用户断开。
+        # 不打印「自动重连」类提示。connect()→disconnect() 会置位 _stop，失败后须清除。
+        interval = 5.0
+        while not self._stop.is_set():
+            time.sleep(interval)
+            if self._stop.is_set():
                 return
-            self._log(f"自动重连({i + 1}/3)…")
-            self._emit(
-                {
-                    "type": "connection",
-                    "state": "reconnecting",
-                    "message": f"自动重连({i + 1}/3)…",
-                }
-            )
+            if self._connected and self._startdt_ok:
+                return
+            if self._connected and not self._startdt_ok:
+                try:
+                    self._send_raw(
+                        codec.build_u_frame(start_dt=True),
+                        note="启动数据传输(act)",
+                    )
+                    self._startdt_sent_at = time.time()
+                    self._startdt_timeout_notified = False
+                except MasterError:
+                    if not self._connected:
+                        self._stop.clear()
+                continue
             try:
                 self.connect(params)
-                return
             except MasterError:
+                if not self._connected:
+                    self._stop.clear()
                 continue
+        # [AGENT_CHANGE_END] 2026-09-11 104静默无限重连
 
 
 # [AGENT_CHANGE_END] 2026-09-07 104-MVP主站

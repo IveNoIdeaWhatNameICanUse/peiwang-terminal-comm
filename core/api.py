@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional
 
 from core.events import EventBus
 from core.eventlog import EventLog
-from core.project import PointDef, ProjectStore, SessionDef, category_for_type
+from core.project import PointDef, ProjectConfig, ProjectStore, SessionDef, category_for_type
 from net import nics_as_dicts
 from protocol.iec101 import Iec101Master, SerialParams
 from protocol.iec104 import ConnectParams, Iec104Master, MasterError, TYPE_NAMES
@@ -477,6 +477,31 @@ class ApiBridge:
             return {"ok": True, "project": self.get_project()}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
+    def new_project(self) -> dict:
+        """断开全部连接，重置为仅含默认主站1、空点表的新工程（内存态；保存前不写盘）。"""
+        try:
+            for m in list(self._masters.values()):
+                try:
+                    m.disconnect()
+                except Exception:
+                    pass
+            self._masters.clear()
+            self._event_logs.clear()
+            self._init_pending.clear()
+            self._init_since.clear()
+            with self._lock:
+                self._frames.clear()
+            self.store.config = ProjectConfig()
+            self.store.config.ensure_sessions()
+            self.store.path = None
+            for s in self.store.config.sessions:
+                self._ensure_master(s.id)
+            return {"ok": True, "project": self.get_project()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    # [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
 
     def upsert_point(self, point: dict, sid: Optional[str] = None) -> dict:
         sid = sid or self.store.config.active_session_id

@@ -161,8 +161,8 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     def import_config():
         """导入工程配置文件（主站会话/点表/参数/规约版本整体替换）。"""
         path = filedialog.askopenfilename(
-            title="导入工程配置",
-            filetypes=[("工程配置", "*.json"), ("所有文件", "*.*")],
+            title="导入工程",
+            filetypes=[("工程文件", "*.json"), ("所有文件", "*.*")],
         )
         if not path:
             return
@@ -180,11 +180,61 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         for sid in list(station_views.keys()):
             remove_station_tab(sid)
         refresh_session_list()
-        messagebox.showinfo("导入成功", f"已导入配置：{path}")
+        messagebox.showinfo("导入成功", f"已导入工程：{path}")
+
+    def do_save():
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
+        apply_form_to_session()
+        cur = getattr(api.store, "path", None)
+        if cur is not None:
+            try:
+                cur = Path(cur)
+            except Exception:
+                cur = None
+        initialdir = str(cur.parent) if cur else str(root / "configs")
+        initialfile = cur.name if cur else "未命名工程.json"
+        path = filedialog.asksaveasfilename(
+            title="保存工程",
+            defaultextension=".json",
+            initialdir=initialdir,
+            initialfile=initialfile,
+            filetypes=[("工程文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        r = api.save_project(api.get_project(), path)
+        if r.get("ok"):
+            messagebox.showinfo("保存", r.get("path", ""))
+        else:
+            messagebox.showerror("保存失败", r.get("error", ""))
+        # [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
+
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
+    def new_project():
+        if not messagebox.askyesno(
+            "新建工程",
+            "将断开全部连接并清空当前会话/点表，未保存的修改会丢失。是否继续？",
+        ):
+            return
+        r = api.new_project()
+        if not r.get("ok"):
+            messagebox.showerror("新建失败", r.get("error", ""))
+            return
+        v = str((api.get_project() or {}).get("protocol_variant") or "广西")
+        variant_var.set(v)
+        try:
+            on_variant_change()
+        except Exception:
+            pass
+        for sid in list(station_views.keys()):
+            remove_station_tab(sid)
+        refresh_session_list()
+        status.set("未连接")
+        messagebox.showinfo("新建工程", "已创建空白工程（请用「保存工程」落盘）")
 
     ttk.Button(right, text="新建主站", command=add_session).pack(fill=tk.X, pady=2)
     ttk.Button(right, text="删除主站", command=del_session).pack(fill=tk.X, pady=2)
-    ttk.Button(right, text="导入配置", command=import_config).pack(fill=tk.X, pady=2)
+    # [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
 
     # ---- 连接参数 ----
     conn = ttk.LabelFrame(frm, text="当前会话连接参数", padding=8)
@@ -215,6 +265,16 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     proto_combo = ttk.Combobox(conn, textvariable=proto_var, values=["104", "101"],
                                width=6, state="readonly")
     proto_combo.grid(row=0, column=7, sticky="w", padx=4)
+
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
+    # 工程三钮：固定在「当前会话连接参数」框最右侧
+    conn.columnconfigure(8, weight=1)
+    proj_col = ttk.Frame(conn)
+    proj_col.grid(row=0, column=9, rowspan=4, sticky="ne", padx=(8, 0))
+    ttk.Button(proj_col, text="新建工程", command=new_project).pack(fill=tk.X, pady=2)
+    ttk.Button(proj_col, text="导入工程", command=import_config).pack(fill=tk.X, pady=2)
+    ttk.Button(proj_col, text="保存工程", command=do_save).pack(fill=tk.X, pady=2)
+    # [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
 
     net_widgets = [local_combo]
     param_btns = {"104": None, "101": None}   # 稍后创建：按协议启用/禁用
@@ -272,14 +332,6 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         api.disconnect(sid)
         refresh_session_list(sid)
         status.set("未连接")
-
-    def do_save():
-        apply_form_to_session()
-        r = api.save_project(api.get_project(), "")
-        if r.get("ok"):
-            messagebox.showinfo("保存", r.get("path", ""))
-        else:
-            messagebox.showerror("保存失败", r.get("error", ""))
 
     def _fit_dialog(dlg, min_w: int = 400, min_h: int = 320) -> None:
         """对话框按内容自适应尺寸并居中显示，避免内容被截断看不到按钮。"""
@@ -622,7 +674,6 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         side=tk.LEFT, padx=3
     )
     ttk.Button(btns, text="刷新网卡", command=refresh_nics).pack(side=tk.LEFT, padx=3)
-    ttk.Button(btns, text="保存工程", command=do_save).pack(side=tk.LEFT, padx=3)
     param_btns["104"] = ttk.Button(btns, text="104 参数设置", command=open_params_dialog)
     param_btns["104"].pack(side=tk.LEFT, padx=3)
     param_btns["101"] = ttk.Button(btns, text="101 参数设置", command=open_101_params_for_current)
