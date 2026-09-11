@@ -242,7 +242,7 @@ def run(unbalanced: bool):
     events = []
     m = Iec101Master(on_event=events.append)
     m.session_id = "sim"
-    p = SerialParams(port="FAKE", baudrate=9600, parity="E", link_addr=ADDR,
+    p = SerialParams(port="FAKE", baudrate=9600, parity="N", link_addr=ADDR,
                      addr_size=ADDR_SIZE, balanced=not unbalanced, data_frame_dir=True,
                      poll_period=0.2, resp_timeout=1.0, common_address=CA)
     m.connect(p)

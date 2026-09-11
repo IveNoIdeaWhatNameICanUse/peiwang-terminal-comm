@@ -36,6 +36,7 @@
 
 ### 未做 / 后续
 
+- **UI 重写（PySide6 + QSS，规避加密软件拦 HTML/WebView）**：Qt 界面已实施并成为默认入口（`PEIWANG_USE_TK=1` 回退 Tk），待打包实测与现场 DLP 验收，**详见 `handoff-ui.md`**
 - 101 / 海南双主站更多实机联调（加密模块多隧道、中心号现场约定）
 - 非平衡「一级数据主动上送 + ACD 轮询」实机时序调优
 - 更完整点表/工程管理体验
@@ -168,7 +169,7 @@ python scripts/sim_iec101_api.py
 
 ### 其它 101 参数
 
-- 串口：`serial_port`、`baudrate`、`serial_parity`、`stopbits`、`link_addr`、`addr_size`（默认 2）、`ioa_size_101`（默认 2）、`poll_period`、`tx_delay_ms`、`ignore_fcb_error`
+- 串口：`serial_port`、`baudrate`、`serial_parity`（**默认 N 无校验**）、`stopbits`、`link_addr`、`addr_size`（默认 2；**海南双主站默认 1**）、`ioa_size_101`（默认 2）、`poll_period`、`tx_delay_ms`、`ignore_fcb_error`
 - DIR/校验和：连接后自动探测（UI 已去掉说明长文，逻辑仍在）
 - **设备参数**（101/104 共用按钮）：`clock_period`（分，默认 10）、`gi_period_min`（分，默认 15）、`heartbeat_period`（秒，默认 30，**仅 101 显示**）；0=禁用；保存后重连生效
 - 可变帧 CS：只对用户数据求和（对时 L=18 与总召 L=12 均正确）

@@ -271,6 +271,9 @@ class ApiBridge:
             m = self._masters.get(s.id)
             statuses[s.id] = bool(m and m.connected)
         data["session_connected"] = statuses
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 工程保存：暴露当前工程文件路径（新建未保存时为空串）
+        data["project_path"] = str(self.store.path) if self.store.path else ""
+        # [AGENT_CHANGE_END] 2026-09-11 工程保存
         return data
 
     def list_sessions(self) -> dict:
@@ -315,6 +318,14 @@ class ApiBridge:
             cid += 1
         s.center_id = cid
         # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 海南双主站默认 1 字节链路地址
+        _lm = str(data.get("link_mode") or "").strip().lower()
+        if _lm in ("unbalanced", "balanced", "hainan"):
+            s.link_mode = _lm
+            s.balanced = _lm in ("balanced", "hainan")
+            if _lm == "hainan":
+                s.addr_size = int(data.get("addr_size") or 1)
+        # [AGENT_CHANGE_END] 2026-09-11 海南双主站默认 1 字节链路地址
         self.store.config.sessions.append(s)
         # 新主站复制当前主站的点表作为初始模板（此后各自独立）
         template = list(self.store.config.session_points(self.store.config.active_session_id))
@@ -376,7 +387,8 @@ class ApiBridge:
             if "baudrate" in data:
                 s.baudrate = int(data["baudrate"] or 9600)
             if "serial_parity" in data:
-                s.serial_parity = str(data["serial_parity"] or "E")
+                # 101 默认无校验（N）
+                s.serial_parity = str(data["serial_parity"] or "N")
             if "stopbits" in data:
                 s.stopbits = int(data["stopbits"] or 1)
             if "link_addr" in data:
@@ -399,6 +411,11 @@ class ApiBridge:
                 s.link_mode = mode
                 # 海南双主站底层按平衡链路
                 s.balanced = mode in ("balanced", "hainan")
+                # [AGENT_CHANGE_BEGIN] 2026-09-11 海南双主站默认 1 字节链路地址
+                # 未显式指定链路地址长度时：海南默认 1 字节，其它模式回到 2 字节
+                if "addr_size" not in data:
+                    s.addr_size = 1 if mode == "hainan" else 2
+                # [AGENT_CHANGE_END] 2026-09-11 海南双主站默认 1 字节链路地址
             elif "balanced" in data:
                 s.link_mode = "balanced" if s.balanced else "unbalanced"
             if "center_id" in data:
@@ -439,6 +456,16 @@ class ApiBridge:
 
     def save_project(self, data: dict, path: str = "") -> dict:
         try:
+            # [AGENT_CHANGE_BEGIN] 2026-09-11 工程保存
+            # 未指定路径时沿用当前工程文件（已打开/已保存过的工程直接覆盖）；
+            # 新建且从未保存过则拒绝落盘，由 UI 先询问文件名与保存目录
+            if path:
+                target = Path(path)
+            elif self.store.path:
+                target = Path(self.store.path)
+            else:
+                return {"ok": False, "error": "工程尚未保存过，请先选择保存位置与文件名"}
+            # [AGENT_CHANGE_END] 2026-09-11 工程保存
             # 允许带 sessions 的完整工程，也兼容旧扁平字段写回 active
             if data.get("sessions"):
                 self.store.config = self.store.config.from_dict({**self.store.config.to_dict(), **data})
@@ -457,7 +484,6 @@ class ApiBridge:
                 )
                 if "points" in data:
                     self.store.config.points = [PointDef(**p) for p in data["points"]]
-            target = Path(path) if path else (self.store.path or (self.root / "configs" / "default.json"))
             self.store.save(target)
             return {"ok": True, "path": str(target)}
         except Exception as e:
@@ -713,7 +739,7 @@ class ApiBridge:
                 sp = SerialParams(
                     port=s.serial_port,
                     baudrate=int(s.baudrate or 9600),
-                    parity=str(s.serial_parity or "E"),
+                    parity=str(s.serial_parity or "N"),
                     stopbits=int(s.stopbits or 1),
                     link_addr=_la,
                     addr_size=_as,

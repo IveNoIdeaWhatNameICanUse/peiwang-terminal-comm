@@ -62,7 +62,7 @@ class HainanSerialHub:
         self.port = port
         self.baudrate = int(baudrate)
         self.bytesize = int(bytesize)
-        self.parity = str(parity or "E")
+        self.parity = str(parity or "N")
         self.stopbits = int(stopbits)
         self._ser = None
         self._stop = threading.Event()
@@ -96,7 +96,7 @@ class HainanSerialHub:
                 if (
                     hub.baudrate != int(baudrate)
                     or hub.bytesize != int(bytesize)
-                    or hub.parity != str(parity or "E")
+                    or hub.parity != str(parity or "N")
                     or hub.stopbits != int(stopbits)
                 ):
                     raise RuntimeError(

@@ -180,34 +180,45 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         for sid in list(station_views.keys()):
             remove_station_tab(sid)
         refresh_session_list()
+        # 导入即「打开已有工程」：标题跟随工程名，之后保存直接覆盖该文件
+        update_project_title(path)
         messagebox.showinfo("导入成功", f"已导入工程：{path}")
 
-    def do_save():
-        # [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
-        apply_form_to_session()
-        cur = getattr(api.store, "path", None)
-        if cur is not None:
+    def update_project_title(path: str = "") -> None:
+        """窗口标题显示当前工程名（新建未保存时显示「未命名工程」）。"""
+        name = "未命名工程"
+        if path:
             try:
-                cur = Path(cur)
+                name = Path(path).stem or name
             except Exception:
-                cur = None
-        initialdir = str(cur.parent) if cur else str(root / "configs")
-        initialfile = cur.name if cur else "未命名工程.json"
-        path = filedialog.asksaveasfilename(
-            title="保存工程",
-            defaultextension=".json",
-            initialdir=initialdir,
-            initialfile=initialfile,
-            filetypes=[("工程文件", "*.json"), ("所有文件", "*.*")],
-        )
+                pass
+        win.title(f"配网终端通讯 · {name} · 104/101 模拟主站（多主站）")
+
+    def do_save():
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 工程保存：新建才命名/选目录
+        apply_form_to_session()
+        data = api.get_project()
+        # 已有工程文件（打开过的或保存过的）→ 直接覆盖，不再询问名称与目录
+        path = str(data.get("project_path") or "")
         if not path:
-            return
-        r = api.save_project(api.get_project(), path)
+            # 新建工程首次保存：命名工程并选择保存目录
+            path = filedialog.asksaveasfilename(
+                title="保存工程（命名并选择保存目录）",
+                defaultextension=".json",
+                initialdir=str(root / "configs"),
+                initialfile="未命名工程.json",
+                filetypes=[("工程文件", "*.json"), ("所有文件", "*.*")],
+            )
+            if not path:
+                return
+        r = api.save_project(data, path)
         if r.get("ok"):
-            messagebox.showinfo("保存", r.get("path", ""))
+            saved = str(r.get("path", ""))
+            update_project_title(saved)
+            status.set(f"已保存：{saved}")
         else:
             messagebox.showerror("保存失败", r.get("error", ""))
-        # [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
+        # [AGENT_CHANGE_END] 2026-09-11 工程保存：新建才命名/选目录
 
     # [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
     def new_project():
@@ -230,7 +241,9 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             remove_station_tab(sid)
         refresh_session_list()
         status.set("未连接")
-        messagebox.showinfo("新建工程", "已创建空白工程（请用「保存工程」落盘）")
+        # 新建工程在内存中，落盘前不写任何本地文件
+        update_project_title("")
+        messagebox.showinfo("新建工程", "已创建空白工程；点「保存工程」时可命名工程并选择保存目录")
 
     ttk.Button(right, text="新建主站", command=add_session).pack(fill=tk.X, pady=2)
     ttk.Button(right, text="删除主站", command=del_session).pack(fill=tk.X, pady=2)
@@ -243,15 +256,20 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ttk.Label(conn, text="名称").grid(row=0, column=0, sticky="w")
     ttk.Entry(conn, textvariable=name_var, width=12).grid(row=0, column=1, padx=4)
     ttk.Label(conn, text="从站 IP").grid(row=0, column=2, sticky="w")
-    ttk.Entry(conn, textvariable=remote_ip, width=16).grid(row=0, column=3, padx=4)
+    # [AGENT_CHANGE_BEGIN] 2026-09-11 101用串口：TCP 参数控件保留引用以便按协议禁用
+    remote_ip_entry = ttk.Entry(conn, textvariable=remote_ip, width=16)
+    remote_ip_entry.grid(row=0, column=3, padx=4)
     ttk.Label(conn, text="端口").grid(row=0, column=4)
-    ttk.Entry(conn, textvariable=remote_port, width=8).grid(row=0, column=5, padx=4)
+    remote_port_entry = ttk.Entry(conn, textvariable=remote_port, width=8)
+    remote_port_entry.grid(row=0, column=5, padx=4)
+    # [AGENT_CHANGE_END] 2026-09-11 101用串口
 
     ttk.Label(conn, text="本地网卡/IP").grid(row=1, column=0, sticky="w")
     local_combo = ttk.Combobox(conn, textvariable=local_ip, width=28)
     local_combo.grid(row=1, column=1, columnspan=2, sticky="we", padx=4)
     ttk.Label(conn, text="本地端口").grid(row=1, column=3)
-    ttk.Entry(conn, textvariable=local_port, width=8).grid(row=1, column=4, padx=4)
+    local_port_entry = ttk.Entry(conn, textvariable=local_port, width=8)
+    local_port_entry.grid(row=1, column=4, padx=4)
     ttk.Label(conn, text="(多主站勿共用同一本地端口)", foreground="#666").grid(row=1, column=5, sticky="w")
 
     ttk.Label(conn, text="公共地址(CA)").grid(row=2, column=0, sticky="w")
@@ -276,7 +294,8 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     ttk.Button(proj_col, text="保存工程", command=do_save).pack(fill=tk.X, pady=2)
     # [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
 
-    net_widgets = [local_combo]
+    # 101（串口）不涉及 TCP 参数：从站 IP/端口、本地端口/网卡一并置灰
+    net_widgets = [remote_ip_entry, remote_port_entry, local_port_entry, local_combo]
     param_btns = {"104": None, "101": None}   # 稍后创建：按协议启用/禁用
 
     def on_proto_change(save: bool = False):
@@ -362,21 +381,45 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         def gv(key, default):
             return tk.StringVar(value=str(sess.get(key, default)))
 
-        port_var2 = gv("serial_port", "COM1")
-        baud_var2 = gv("baudrate", 9600)
-        parity_var2 = gv("serial_parity", "E")
-        stop_var2 = gv("stopbits", 1)
-        link_var = gv("link_addr", 1)
-        addr_var2 = gv("addr_size", 2)
-        poll_var2 = gv("poll_period", 1.0)
-        ack_var = gv("link_ack_timeout", 10.0)
-        ioa_var2 = gv("ioa_size_101", 2)
         # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
         _mode0 = str(sess.get("link_mode") or (
             "balanced" if sess.get("balanced") else "unbalanced"
         ))
         _mode_labels = {"unbalanced": "非平衡", "balanced": "平衡", "hainan": "海南双主站"}
         mode_var = tk.StringVar(value=_mode_labels.get(_mode0, "非平衡"))
+        # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
+        port_var2 = gv("serial_port", "COM1")
+        baud_var2 = gv("baudrate", 9600)
+        parity_var2 = gv("serial_parity", "N")   # 默认无校验
+        stop_var2 = gv("stopbits", 1)
+        link_var = gv("link_addr", 1)
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 海南双主站默认 1 字节链路地址
+        # 海南现场链路地址为 1 字节；工程里遗留的 2（旧默认）在海南模式下按未设置处理
+        _addr0 = int(sess.get("addr_size") or 2)
+        if _mode0 == "hainan" and _addr0 == 2:
+            _addr0 = 1
+        addr_var2 = tk.StringVar(value=str(_addr0))
+        _addr_prog = {"flag": False}     # 程序化写入标记
+        _addr_user = {"flag": False}     # 用户是否手动改过
+
+        def _on_addr_write(*_a):
+            if not _addr_prog["flag"]:
+                _addr_user["flag"] = True
+
+        def _apply_mode_addr_default(*_a):
+            """切换链路模式时同步默认链路地址长度；用户手动改过则不覆盖。"""
+            if _addr_user["flag"]:
+                return
+            target = "1" if mode_var.get() == "海南双主站" else "2"
+            if addr_var2.get() != target:
+                _addr_prog["flag"] = True
+                addr_var2.set(target)
+                _addr_prog["flag"] = False
+        # [AGENT_CHANGE_END] 2026-09-11 海南双主站默认 1 字节链路地址
+        poll_var2 = gv("poll_period", 1.0)
+        ack_var = gv("link_ack_timeout", 10.0)
+        ioa_var2 = gv("ioa_size_101", 2)
+        # [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装
         center_var = gv("center_id", 1)
         # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
         # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
@@ -438,8 +481,13 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             st = "normal" if show else "disabled"
             center_entry.configure(state=st)
             center_hint.configure(foreground="#666" if show else "#bbb")
+            # [AGENT_CHANGE_BEGIN] 2026-09-11 海南双主站默认 1 字节链路地址
+            _apply_mode_addr_default()
+            # [AGENT_CHANGE_END] 2026-09-11 海南双主站默认 1 字节链路地址
 
         mode_var.trace_add("write", _toggle_center)
+        # 用户手动改过链路地址长度后，不再随模式自动覆盖
+        addr_var2.trace_add("write", _on_addr_write)
         _toggle_center()
         # [AGENT_CHANGE_END] 2026-09-10 海南双主站AA封装
         # [AGENT_CHANGE_BEGIN] 2026-09-10 忽略FCB位错误
@@ -459,10 +507,11 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 data = {
                     "serial_port": port_var2.get().strip() or "COM1",
                     "baudrate": int(baud_var2.get() or 9600),
-                    "serial_parity": parity_var2.get() or "E",
+                    "serial_parity": parity_var2.get() or "N",
                     "stopbits": int(stop_var2.get() or 1),
                     "link_addr": int(link_var.get() or 1),
-                    "addr_size": int(addr_var2.get() or 2),
+                    # 海南双主站默认 1 字节链路地址
+                    "addr_size": int(addr_var2.get() or (1 if link_mode == "hainan" else 2)),
                     "poll_period": float(poll_var2.get() or 1.0),
                     "link_ack_timeout": float(ack_var.get() or 10.0),
                     "ioa_size_101": int(ioa_var2.get() or 2),
@@ -1854,15 +1903,20 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         win.after(200, poll_events)
 
     def on_close():
-        # 退出前自动保存工程（防止重启丢失已保存主站）
+        # [AGENT_CHANGE_BEGIN] 2026-09-11 工程保存：仅已有工程文件时才自动落盘
+        # 新建且从未保存过的工程（store.path 为空）不写任何本地文件
         try:
-            api.save_project(api.get_project(), "")
+            if getattr(api.store, "path", None):
+                api.save_project(api.get_project(), "")
         except Exception:
             pass
         win.destroy()
+        # [AGENT_CHANGE_END] 2026-09-11 工程保存：仅已有工程文件时才自动落盘
 
     refresh_nics()
     refresh_session_list()
+    # 启动时若已加载工程文件，窗口标题显示其名称
+    update_project_title(str(getattr(api.store, "path", "") or ""))
     ensure_station_tabs()
     reload_points()
     poll_events()

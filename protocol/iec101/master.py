@@ -30,7 +30,7 @@ class SerialParams:
     port: str = "COM1"
     baudrate: int = 9600
     bytesize: int = 8
-    parity: str = "E"          # N / E / O
+    parity: str = "N"          # N / E / O（默认无校验）
     stopbits: int = 1
     link_addr: int = 1         # 链路地址
     addr_size: int = 1         # 链路地址长度(1/2 字节)
@@ -188,7 +188,7 @@ class Iec101Master:
                     port=p.port,
                     baudrate=int(p.baudrate),
                     bytesize=int(p.bytesize),
-                    parity=str(p.parity or "E"),
+                    parity=str(p.parity or "N"),
                     stopbits=int(p.stopbits),
                     on_payload=self._on_hainan_payload,
                 )
@@ -203,7 +203,7 @@ class Iec101Master:
                     port=p.port,
                     baudrate=int(p.baudrate),
                     bytesize=int(p.bytesize),
-                    parity=str(p.parity or "E"),
+                    parity=str(p.parity or "N"),
                     stopbits=int(p.stopbits),
                     timeout=0.2,
                 )

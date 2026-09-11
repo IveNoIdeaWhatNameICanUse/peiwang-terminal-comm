@@ -77,7 +77,7 @@ def main():
 
     r = api.update_session(sid, {
         "protocol": "101", "serial_port": "COM_TEST", "baudrate": 9600,
-        "serial_parity": "E", "stopbits": 1, "link_addr": 1, "balanced": False,
+        "serial_parity": "N", "stopbits": 1, "link_addr": 1, "balanced": False,
         "poll_period": 0.2, "ioa_size_101": 2, "common_address": 1,
     })
     check(r.get("ok", True), "update_session -> protocol 101")

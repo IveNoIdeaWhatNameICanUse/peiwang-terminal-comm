@@ -342,14 +342,19 @@
       if (curSid) await api("update_session", curSid, { protocol: $("protocolSel").value });
     };
     $("btnSave").onclick = async () => {
-      // [AGENT_CHANGE_BEGIN] 2026-09-11 新建工程按钮
-      const name = prompt("请输入工程名称（可含路径；默认 .json）", "未命名工程");
-      if (!name) return;
-      const path = /\.json$/i.test(name) ? name : `${name}.json`;
-      const r = await api("save_project", await api("get_project"), path);
+      // [AGENT_CHANGE_BEGIN] 2026-09-11 工程保存：新建才命名
+      const data = await api("get_project");
+      // 已有工程文件（打开过的或保存过的）→ 直接覆盖，不再询问名称
+      let path = data.project_path || "";
+      if (!path) {
+        const name = prompt("请输入工程名称（可含路径；默认 .json）", "未命名工程");
+        if (!name) return;
+        path = /\.json$/i.test(name) ? name : `${name}.json`;
+      }
+      const r = await api("save_project", data, path);
       if (!r.ok) await appAlert("保存失败", r.error || "");
       else await appAlert("已保存", r.path || "");
-      // [AGENT_CHANGE_END] 2026-09-11 新建工程按钮
+      // [AGENT_CHANGE_END] 2026-09-11 工程保存：新建才命名
     };
     async function openSessionParams(forceProto) {
       const s = (await api("get_project")).sessions.find((x) => x.id === curSid) || {};
@@ -358,20 +363,26 @@
         const portOpts = (ports || []).map((p) =>
           `<option value="${p.port}"${p.port === (s.serial_port || "") ? " selected" : ""}>${p.port}</option>`).join("");
         const sel = (v, cur) => (String(v) === String(cur) ? " selected" : "");
+        /* [AGENT_CHANGE_BEGIN] 2026-09-11 海南双主站默认 1 字节链路地址 */
+        // 海南现场链路地址 1 字节；工程里遗留的 2（旧默认）在海南模式下按未设置处理
+        const mode0 = s.link_mode || (s.balanced ? "balanced" : "unbalanced");
+        let addrSize0 = Number(s.addr_size || 2);
+        if (mode0 === "hainan" && addrSize0 === 2) addrSize0 = 1;
+        /* [AGENT_CHANGE_END] 2026-09-11 海南双主站默认 1 字节链路地址 */
         const fields = [
           [`串口`, `<select id="p_serial_port">${portOpts || `<option value="${s.serial_port || "COM1"}">${s.serial_port || "COM1"}</option>`}</select>`],
           [`波特率`, `<input id="p_baudrate" type="number" value="${s.baudrate || 9600}" style="width:100px;" />`],
-          [`校验`, `<select id="p_serial_parity"><option value="N"${sel("N", s.serial_parity)}>N 无</option><option value="E"${sel("E", s.serial_parity || "E")}>E 偶</option><option value="O"${sel("O", s.serial_parity)}>O 奇</option></select>`],
+          [`校验`, `<select id="p_serial_parity"><option value="N"${sel("N", s.serial_parity || "N")}>N 无</option><option value="E"${sel("E", s.serial_parity || "N")}>E 偶</option><option value="O"${sel("O", s.serial_parity)}>O 奇</option></select>`],
           [`停止位`, `<select id="p_stopbits"><option value="1"${sel(1, s.stopbits || 1)}>1</option><option value="2"${sel(2, s.stopbits)}>2</option></select>`],
           [`链路地址(>255 自动 2 字节)`, `<input id="p_link_addr" type="number" value="${s.link_addr || 1}" style="width:100px;" />`],
-          [`链路地址长度(字节)`, `<select id="p_addr_size"><option value="1"${sel(1, s.addr_size || 2)}>1</option><option value="2"${sel(2, s.addr_size || 2)}>2</option></select>`],
+          [`链路地址长度(字节)`, `<select id="p_addr_size" onchange="this.dataset.touched='1'"><option value="1"${sel(1, addrSize0)}>1</option><option value="2"${sel(2, addrSize0)}>2</option></select>`],
           [`轮询周期(秒)`, `<input id="p_poll_period" type="number" step="0.1" value="${s.poll_period || 1.0}" style="width:100px;" />`],
           [`链路应答超时(秒)`, `<input id="p_link_ack_timeout" type="number" step="1" value="${s.link_ack_timeout || 10}" style="width:100px;" />`],
           [`信息体地址长度(字节)`, `<select id="p_ioa_size_101"><option value="2"${sel(2, s.ioa_size_101 || 2)}>2</option><option value="3"${sel(3, s.ioa_size_101)}>3</option></select>`],
           /* [AGENT_CHANGE_BEGIN] 2026-09-10 海南双主站AA封装 */
           [`链路模式`, (() => {
-            const m = s.link_mode || (s.balanced ? "balanced" : "unbalanced");
-            return `<select id="p_link_mode">
+            const m = mode0;
+            return `<select id="p_link_mode" onchange="var a=document.getElementById('p_addr_size');if(a&amp;&amp;a.dataset.touched!=='1')a.value=this.value==='hainan'?'1':'2';">
               <option value="unbalanced"${m === "unbalanced" ? " selected" : ""}>非平衡</option>
               <option value="balanced"${m === "balanced" ? " selected" : ""}>平衡</option>
               <option value="hainan"${m === "hainan" ? " selected" : ""}>海南双主站</option>
@@ -397,7 +408,8 @@
             serial_parity: $("p_serial_parity").value,
             stopbits: Number($("p_stopbits").value || 1),
             link_addr: Number($("p_link_addr").value || 1),
-            addr_size: Number($("p_addr_size").value || 2),
+            // 海南双主站默认 1 字节链路地址
+            addr_size: Number($("p_addr_size").value || (linkMode === "hainan" ? 1 : 2)),
             poll_period: Number($("p_poll_period").value || 1.0),
             link_ack_timeout: Number($("p_link_ack_timeout").value || 10),
             ioa_size_101: Number($("p_ioa_size_101").value || 2),
