@@ -49,6 +49,12 @@ class TypeId(IntEnum):
     C_CI_NA_1 = 101
     C_RD_NA_1 = 102
     C_CS_NA_1 = 103
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程命令
+    C_RP_NA_1 = 105  # 复位进程命令
+    # [AGENT_CHANGE_END] 2026-09-12 复位进程命令
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 平衡101对齐KW-2200延时获得
+    C_CD_NA_1 = 106  # 延时获得命令
+    # [AGENT_CHANGE_END] 2026-09-12 平衡101对齐KW-2200延时获得
 
 
 TYPE_NAMES = {
@@ -74,6 +80,9 @@ TYPE_NAMES = {
     101: "计数量召唤 C_CI_NA_1",
     102: "读命令 C_RD_NA_1",
     103: "时钟同步 C_CS_NA_1",
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 平衡101对齐KW-2200延时获得
+    106: "延时获得 C_CD_NA_1",
+    # [AGENT_CHANGE_END] 2026-09-12 平衡101对齐KW-2200延时获得
     105: "复位进程命令 C_RP_NA_1",
     108: "读参数命令(短浮点) C_RS_NA_1",
     136: "特殊应用(专用范围) 定值类",

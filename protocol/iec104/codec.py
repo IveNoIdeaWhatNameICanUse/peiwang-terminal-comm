@@ -126,6 +126,41 @@ def build_clock_sync(ca: int, dt: Optional[datetime] = None, oa: int = 0, cot_si
     return header + _ioa_bytes(0, ioa_size) + time_bytes
 
 
+# [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程命令
+def build_reset_process(
+    ca: int,
+    qrp: int = 1,
+    oa: int = 0,
+    cot_size: int = 2,
+    ca_size: int = 2,
+    ioa_size: int = 3,
+) -> bytes:
+    """C_RP_NA_1(105) 复位进程：IOA=0 + QRP。
+    QRP：1=总复位进程（常用），2=复位事件缓冲区带时标的未处理信息（F30/标准）。
+    """
+    header = encode_asdu_header(TypeId.C_RP_NA_1, 1, 6, ca, oa, cot_size=cot_size, ca_size=ca_size)
+    return header + _ioa_bytes(0, ioa_size) + bytes([int(qrp) & 0xFF])
+
+
+# [AGENT_CHANGE_END] 2026-09-12 复位进程命令
+
+
+# [AGENT_CHANGE_BEGIN] 2026-09-12 平衡101对齐KW-2200延时获得
+def build_delay_acquisition(
+    ca: int,
+    delay_ms: int,
+    oa: int = 0,
+    cot: int = 6,
+    cot_size: int = 2,
+    ca_size: int = 2,
+    ioa_size: int = 3,
+) -> bytes:
+    """C_CD_NA_1(106) 延时获得：IOA + CP16Time2a(毫秒, 2B LE)。"""
+    header = encode_asdu_header(TypeId.C_CD_NA_1, 1, cot, ca, oa, cot_size=cot_size, ca_size=ca_size)
+    return header + _ioa_bytes(0, ioa_size) + struct.pack("<H", int(delay_ms) & 0xFFFF)
+# [AGENT_CHANGE_END] 2026-09-12 平衡101对齐KW-2200延时获得
+
+
 def build_single_command(ca: int, ioa: int, on: bool, select: bool, oa: int = 0, cot: int = 6, cot_size: int = 2, ca_size: int = 2, ioa_size: int = 3) -> bytes:
     header = encode_asdu_header(TypeId.C_SC_NA_1, 1, cot, ca, oa, cot_size=cot_size, ca_size=ca_size)
     sco = (1 if on else 0) | (0x80 if select else 0x00)
@@ -305,11 +340,18 @@ def decode_asdu(data: bytes, cot_size: int = 2, ca_size: int = 2, ioa_size: int 
             elem = 5 + (7 if type_id == TypeId.M_ME_TF_1 else 0)
             objects = _decode_seq(payload, n, sq, ioa_size, elem, _parse_me_nc)
         elif type_id in (TypeId.C_SC_NA_1, TypeId.C_DC_NA_1, TypeId.C_IC_NA_1, TypeId.C_CS_NA_1,
-                         TypeId.C_RD_NA_1, TypeId.C_SE_NA_1, TypeId.C_SE_NB_1, TypeId.C_SE_NC_1):
-            # 控制方向确认，尽量解析 IOA
+                         TypeId.C_RD_NA_1, TypeId.C_SE_NA_1, TypeId.C_SE_NB_1, TypeId.C_SE_NC_1,
+                         TypeId.C_CD_NA_1, TypeId.C_RP_NA_1):
+            # 控制方向确认，尽量解析 IOA（105 复位进程：IOA + QRP）
             if len(payload) >= ioa_size:
                 ioa = int.from_bytes(payload[:ioa_size], "little")
-                objects = [InformationObject(ioa=ioa, value=payload[ioa_size:].hex())]
+                rest = payload[ioa_size:]
+                val: object = rest.hex()
+                extra = {}
+                if type_id == TypeId.C_RP_NA_1 and rest:
+                    val = int(rest[0])
+                    extra = {"qrp": int(rest[0])}
+                objects = [InformationObject(ioa=ioa, value=val, extra=extra)]
         elif type_id in (200, 201):
             # 定值区命令响应：对象地址(3B) + 当前定值区号(2B) [+ 最小区号(2B) + 最大区号(2B)，仅 201]
             if type_id == 201 and len(payload) >= ioa_size + 6:

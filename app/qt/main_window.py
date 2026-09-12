@@ -232,9 +232,13 @@ class MainWindow(QMainWindow):
         row1.addWidget(field_label("规约版本"))
         row1.addWidget(self.variant_combo)
         row1.addWidget(self.variant_hint)
-        row1.addStretch(1)
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程按钮
+        # 总召/对时靠左（紧跟规约版本），其后增加「复位进程」；右侧 stretch 留白
         row1.addWidget(make_button("总召唤", lambda: self._do(self.api.general_interrogation)))
         row1.addWidget(make_button("时钟同步", lambda: self._do(self.api.clock_sync)))
+        row1.addWidget(make_button("复位进程", lambda: self._do(lambda: self.api.reset_process(1))))
+        row1.addStretch(1)
+        # [AGENT_CHANGE_END] 2026-09-12 复位进程按钮
         lay.addLayout(row1)
 
         self.batch_edit = LineEdit()

@@ -87,20 +87,32 @@ def main():
     check(api.is_connected(sid), "is_connected() true")
 
     check(wait_for(lambda: sim.link.FC_RESET_LINK in slave.fc_rx, 2.0), "slave saw reset link (FC=0)")
-    check(wait_for(lambda: sim.link.FC_REQ_LEVEL2 in slave.fc_rx, 3.0), "slave saw level-2 poll")
+    # 非平衡：启动拉初始化结束/总召后延时获得期间暂停 2 级；完成后才周期召 2 级
+    check(wait_for(lambda: sim.link.FC_REQ_LEVEL2 in slave.fc_rx, 12.0), "slave saw level-2 poll after startup")
 
     def points():
         return (api.get_project().get("points_by_session") or {}).get(sid, [])
 
-    # spontaneous frames during the init window: values fill the point table,
-    # events are intentionally suppressed until general interrogation finishes
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 禁止报文自动加点表
+    # 点须预先进表；报文只刷新已有点，不再自动创建 IOA
+    api.upsert_point({"ioa": 1001, "type_id": 13, "name": "YC-1001", "category": "遥测"}, sid=sid)
+    api.upsert_point({"ioa": 11, "type_id": 1, "name": "YX-11", "category": "遥信"}, sid=sid)
+    api.upsert_point({"ioa": 5, "type_id": 30, "name": "YX-SOE-5", "category": "遥信"}, sid=sid)
+
     slave.pending.append(sim.SPONT_ME)
     slave.pending.append(sim.mk_asdu(1, 3, 1, sim.sp_objects([(11, True)]), count=1))
 
-    check(wait_for(lambda: any(p.get("ioa") == 1001 for p in points()), 4.0),
-          "telemetry IOA 1001 auto-created in point table")
-    check(wait_for(lambda: any(p.get("ioa") == 11 for p in points()), 4.0),
-          "single point IOA 11 auto-created")
+    check(wait_for(lambda: any(p.get("ioa") == 1001 and p.get("value") is not None for p in points()), 4.0),
+          "telemetry IOA 1001 value updated (existing point)")
+    check(wait_for(lambda: any(p.get("ioa") == 11 and p.get("value") is not None for p in points()), 4.0),
+          "single point IOA 11 value updated (existing point)")
+    # 未建点的 IOA 不应被报文偷偷加入
+    before_n = len(points())
+    slave.pending.append(sim.mk_asdu(13, 3, 1, sim.me_nc_objects([(9999, 1.0)])))
+    time.sleep(1.0)
+    check(len(points()) == before_n and not any(p.get("ioa") == 9999 for p in points()),
+          "unknown IOA 9999 not auto-added to point table")
+    # [AGENT_CHANGE_END] 2026-09-12 禁止报文自动加点表
 
     ev = api.get_events(sid).get("events", [])
     check(any(e.get("kind") == "sys" and LINK_START in str(e.get("content", "")) for e in ev),

@@ -291,6 +291,83 @@ class Iec104Master:
         )
         self._send_i(asdu, note="时钟同步")
 
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程命令
+    def reset_process(self, qrp: int = 1) -> None:
+        """C_RP_NA_1(105) 复位进程，默认 QRP=1 总复位。
+
+        先等从站确认(COT=7)；无确认或确认后静默超过「链路应答超时」则断链重连
+        （STARTDT→总召），不在半开链路上继续发周期总召/心跳。
+        """
+        self._ensure()
+        assert self._params
+        asdu = codec.build_reset_process(
+            self._params.common_address,
+            qrp=int(qrp),
+            oa=self._params.originator,
+            cot_size=self._params.cot_size,
+            ca_size=self._params.ca_size,
+            ioa_size=self._params.ioa_size,
+        )
+        t = max(0.1, float(self._params.link_ack_timeout or 10.0))
+        before = self.i_frame_count()
+        self._send_i(asdu, note=f"复位进程(QRP={int(qrp)})")
+
+        def _watch() -> None:
+            try:
+                r = self.wait_cmd_result({105}, {7}, before, t)
+                if not self._connected:
+                    return
+                if not r:
+                    self._log(f"复位进程：{t:g}s 内未收到从站确认，重建链路")
+                    self._force_tcp_recover("复位进程(无应用确认)")
+                    return
+                self._log(
+                    f"复位进程：已收到从站确认(COT={r.get('cot')}"
+                    f"{'' if r.get('pos', True) else ' 否定'})，"
+                    f"继续监视；{t:g}s 无接收则重建链路"
+                )
+                while self._connected and not self._stop.is_set():
+                    idle = time.time() - float(self._last_rx or 0.0)
+                    if idle >= t:
+                        self._log(f"复位进程后无应答：已 {idle:.0f}s 无接收，重建链路")
+                        self._force_tcp_recover("复位进程后无应答")
+                        return
+                    time.sleep(0.2)
+            except Exception as e:
+                self._log(f"复位进程监视异常：{e}")
+
+        threading.Thread(target=_watch, name="iec104-rp-wait", daemon=True).start()
+
+    def _force_tcp_recover(self, cause: str) -> None:
+        """断 TCP 并触发静默重连（重连后发 STARTDT，auto_init 再总召）。"""
+        if not self._params or self._stop.is_set():
+            return
+        params = self._params
+        self._log(f"{cause}：断开 TCP，准备重连（STARTDT→总召）")
+        self._startdt_ok = False
+        self._gi_sent_at = 0.0
+        self._clock_sent = False
+        self._startdt_timeout_notified = False
+        sock = self._sock
+        self._connected = False
+        self._sock = None
+        if sock:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            except OSError:
+                pass
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if params.auto_reconnect and not self._stop.is_set():
+            self._start_reconnect(params)
+    # [AGENT_CHANGE_END] 2026-09-12 复位进程命令
+
     def single_command(self, ioa: int, on: bool, select: bool, cancel: bool = False) -> None:
         self._ensure()
         assert self._params
@@ -559,10 +636,18 @@ class Iec104Master:
                 p = self._params
                 now = time.time()
                 if p:
+                    # [AGENT_CHANGE_BEGIN] 2026-09-12 104未STARTDT禁业务保活
+                    # STARTDT 未确认：不发 TESTFR；只由定时器补发启动帧
+                    if not self._startdt_ok:
+                        continue
+                    # [AGENT_CHANGE_END] 2026-09-12 104未STARTDT禁业务保活
                     # T3 空闲超时：发送链路测试(act)，并等待从站确认
                     # 空闲 = 最后收发较晚者起算（与从站对等，避免从站先到期断开）
                     idle = now - max(self._last_rx, self._last_tx)
-                    if not self._testfr_waiting and idle > p.t3:
+                    # [AGENT_CHANGE_BEGIN] 2026-09-12 104自动初始化禁TESTFR
+                    init_busy = bool(self.auto_init and self._gi_sent_at and not self._clock_sent)
+                    if not init_busy and not self._testfr_waiting and idle > p.t3:
+                    # [AGENT_CHANGE_END] 2026-09-12 104自动初始化禁TESTFR
                         try:
                             self._send_raw(codec.build_u_frame(testfr=True), note="链路测试(act)")
                             self._testfr_waiting = True
@@ -719,27 +804,9 @@ class Iec104Master:
             if parsed.test:
                 note += "(测试)"
             note += f" 公共地址={parsed.ca}"
-            # 对象摘要：IOA + 值
-            objs = parsed.objects
-            if objs:
-                parts = []
-                for o in objs[:8]:
-                    v = o.value
-                    if isinstance(v, bool):
-                        vs = "合" if v else "分"
-                    elif isinstance(v, float):
-                        vs = "%g" % v
-                    else:
-                        vs = str(v)
-                    desc = f"IOA=0x{o.ioa:X}({o.ioa}) 值={vs}"
-                    if o.extra.get("area") is not None:
-                        desc += f" 区号={o.extra['area']}"
-                        if o.extra.get("feat") is not None:
-                            desc += f" 特征={o.extra['feat']}"
-                    parts.append(desc)
-                if len(objs) > 8:
-                    parts.append(f"…共{len(objs)}个")
-                note += " | " + " ; ".join(parts)
+            # [AGENT_CHANGE_BEGIN] 2026-09-12 监视摘要只到公共地址
+            # 信息体明细改由右键「报文解析」查看；监视行不再罗列 IOA
+            # [AGENT_CHANGE_END] 2026-09-12 监视摘要只到公共地址
         except Exception:
             note = "信息帧(ASDU 解析失败)"
 
@@ -827,6 +894,51 @@ class Iec104Master:
             p = self._params
             now = time.time()
             try:
+                # T2 确认超时：收到 I 帧后未达到 W/2 触发时，定时回 S 帧确认
+                if self._ack_pending and now - self._last_i_rx > p.t2:
+                    try:
+                        self._send_raw(
+                            codec.build_s_frame(self._nr), note=f"监视帧(确认) N(R)={self._nr}"
+                        )
+                        self._ack_pending = 0
+                    except MasterError:
+                        pass
+                # [AGENT_CHANGE_BEGIN] 2026-09-12 104未STARTDT禁业务保活
+                # STARTDT 未确认：禁止周期总召/校时；超时只继续补发启动帧（对齐 101）
+                if not self._startdt_ok:
+                    if (
+                        self._startdt_sent_at
+                        and now - self._startdt_sent_at > p.link_ack_timeout
+                    ):
+                        self._log(
+                            f"启动传输未确认（{p.link_ack_timeout:.0f}s），继续发送「启动数据传输」(act)"
+                        )
+                        self._emit(
+                            {
+                                "type": "connection",
+                                "state": "notice",
+                                "message": (
+                                    f"链路应答超时：{p.link_ack_timeout:.0f}s 内未收到启动传输确认，"
+                                    f"继续请求 STARTDT"
+                                ),
+                            }
+                        )
+                        try:
+                            self._send_raw(
+                                codec.build_u_frame(start_dt=True),
+                                note="启动数据传输(act)",
+                            )
+                            self._startdt_sent_at = now
+                            self._startdt_timeout_notified = True
+                        except MasterError:
+                            pass
+                    continue
+                # [AGENT_CHANGE_END] 2026-09-12 104未STARTDT禁业务保活
+                # [AGENT_CHANGE_BEGIN] 2026-09-12 104自动初始化禁TESTFR
+                # 首启总召未完成校时前：禁止周期总召/校时抢插（COT=10/8s兜底负责首校时）
+                if self.auto_init and self._gi_sent_at and not self._clock_sent:
+                    continue
+                # [AGENT_CHANGE_END] 2026-09-12 104自动初始化禁TESTFR
                 if p.gi_period and now - self._last_gi >= p.gi_period:
                     self._last_gi = now
                     self.general_interrogation()
@@ -838,31 +950,6 @@ class Iec104Master:
                     self._last_clock = now
                     self.clock_sync()
                 # [AGENT_CHANGE_END] 2026-09-10 设备参数周期
-                # T2 确认超时：收到 I 帧后未达到 W/2 触发时，定时回 S 帧确认
-                if self._ack_pending and now - self._last_i_rx > p.t2:
-                    try:
-                        self._send_raw(
-                            codec.build_s_frame(self._nr), note=f"监视帧(确认) N(R)={self._nr}"
-                        )
-                        self._ack_pending = 0
-                    except MasterError:
-                        pass
-                # 链路应答超时：STARTDT 发出后未收到确认
-                if (
-                    self._startdt_sent_at
-                    and not self._startdt_ok
-                    and not self._startdt_timeout_notified
-                    and now - self._startdt_sent_at > p.link_ack_timeout
-                ):
-                    self._startdt_timeout_notified = True
-                    self._log(f"链路初始化超时：{p.link_ack_timeout:.0f}s 内未收到「启动传输确认」")
-                    self._emit(
-                        {
-                            "type": "connection",
-                            "state": "notice",
-                            "message": f"链路应答超时：{p.link_ack_timeout:.0f}s 内未收到启动传输确认",
-                        }
-                    )
                 # 远控命令超时
                 if (
                     self._last_cmd_sent

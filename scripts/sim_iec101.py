@@ -261,7 +261,12 @@ def run(unbalanced: bool):
                   and e.get("hex") == "E5" for e in events), "single-char E5 confirmation handled")
 
     if unbalanced:
-        check(wait_for(lambda: (link.FC_REQ_LEVEL2 in sim.fc_rx), 2.0), "cyclic level-2 poll observed")
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 非平衡101对齐KW-2200启动
+        # 启动阶段只召1级；等总召后延时获得/校时完成再查2级（KW: 7B/5B）
+        check(wait_for(lambda: any(a.type_id == 103 for a in sim.rx_asdus), 8.0),
+              "post-GI clock sync (startup) observed")
+        check(wait_for(lambda: (link.FC_REQ_LEVEL2 in sim.fc_rx), 4.0), "cyclic level-2 poll observed")
+        # [AGENT_CHANGE_END] 2026-09-12 非平衡101对齐KW-2200启动
         check(wait_for(lambda: (link.FC_REQ_LEVEL1 in sim.fc_rx), 4.0),
               "level-1 poll after ACD=1", "slave set ACD=1")
 
@@ -308,7 +313,8 @@ def run(unbalanced: bool):
               "frame format: reset link = 10 40 01 00 41 16", str(raw[:3]))
         check(any(h == "10 49 01 00 4A 16" for h in raw),
               "frame format: link status = 10 49 01 00 4A 16")
-        check(any(h.startswith("10 4B 01 00") for h in raw), "frame format: level-2 poll = 10 4B 01 00 ...")
+        check(any(h.startswith("10 7B 01 00") or h.startswith("10 5B 01 00") for h in raw),
+              "frame format: level-2 poll = 10 7B/5B 01 00 ... (FCB+FCV)")
     else:
         check(any(h == "10 C0 01 00 C1 16" for h in raw),
               "frame format: reset link = 10 C0 01 00 C1 16", str(raw[:3]))

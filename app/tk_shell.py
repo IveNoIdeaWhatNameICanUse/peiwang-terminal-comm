@@ -759,12 +759,18 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     variant_combo.pack(side=tk.LEFT, padx=(0, 10))
     variant_hint = ttk.Label(op_r1, text=VARIANT_HINTS.get(variant_var.get(), ""), foreground="#666")
     variant_hint.pack(side=tk.LEFT, padx=(0, 10))
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程按钮
     ttk.Button(op_r1, text="总召唤", command=lambda: (apply_form_to_session(), _ok(api.general_interrogation()))).pack(
         side=tk.LEFT, padx=3
     )
     ttk.Button(op_r1, text="时钟同步", command=lambda: (apply_form_to_session(), _ok(api.clock_sync()))).pack(
         side=tk.LEFT, padx=3
     )
+    ttk.Button(
+        op_r1, text="复位进程",
+        command=lambda: (apply_form_to_session(), _ok(api.reset_process(1))),
+    ).pack(side=tk.LEFT, padx=3)
+    # [AGENT_CHANGE_END] 2026-09-12 复位进程按钮
 
     # 遥控操作：不再在此处手输 IOA，改为在点表左键选中、双击弹出操作窗口（选择/执行/撤销 + 分/合）
 
@@ -1047,7 +1053,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
 
             tree.bind("<Control-a>", _select_all)
             tree.bind("<Control-A>", _select_all)
-            tree.bind("<Double-1>", lambda e, t=tree: on_tree_double(e, t))
+            tree.bind("<Double-1>", lambda e, t=tree, c=cat: on_tree_double(e, t, c))
             trees[cat] = tree
 
         hex_var = view["hex_var"]
@@ -1191,10 +1197,14 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             ed.bind("<FocusOut>", commit)
             return "break"
 
-        def on_tree_double(event, t):
-            """点表双击：遥控点弹遥控窗口；“修改值”列就地编辑。"""
+        def on_tree_double(event, t, cat=""):
+            """点表双击：遥控点弹遥控窗口；仅遥调「修改值」列就地编辑。"""
+            # [AGENT_CHANGE_BEGIN] 2026-09-12 仅遥调可编辑修改值
             if t.identify_column(event.x).startswith("#6"):
+                if cat != "遥调":
+                    return "break"
                 return _edit_modval(event, t)
+            # [AGENT_CHANGE_END] 2026-09-12 仅遥调可编辑修改值
             iid = t.identify_row(event.y)
             if not iid:
                 return
@@ -1602,8 +1612,13 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
                 return
             if auto_scroll.get():
                 if not m["frozen"] and m["pending"]:
-                    for b in m["pending"]:
-                        _append_text(m, b)
+                    for item in m["pending"]:
+                        if isinstance(item, tuple):
+                            _append_text(m, item[0], extra=item[1] if len(item) > 1 else ())
+                            m.setdefault("hexes", []).append(item[2] if len(item) >= 3 else "")
+                        else:
+                            _append_text(m, item)
+                            m.setdefault("hexes", []).append("")
                     m["pending"].clear()
                 m["text"].see(tk.END)
                 m["status"].config(text="")
@@ -1641,8 +1656,12 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
 
         ttk.Button(toolbar, text="导出报文", command=export_monitor).pack(side=tk.LEFT, padx=6)
 
-        text = tk.Text(frame, height=12, bg="#0b1220", fg="#dbeafe", font=("Consolas", 10), wrap="char")
-        text.tag_config("log", foreground="#facc15")
+        text = tk.Text(frame, height=12, bg="#ffffff", fg="#1f2a32", font=("Consolas", 10), wrap="char")
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视配色
+        text.tag_config("tx", foreground="#dc2626")
+        text.tag_config("rx", foreground="#2563eb")
+        text.tag_config("log", foreground="#ca8a04")
+        # [AGENT_CHANGE_END] 2026-09-12 报文监视配色
         sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
         text.configure(yscrollcommand=sb.set)
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1655,8 +1674,10 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             "frozen": False,
             "pending": [],
             "tags": [],
+            "hexes": [],
             "n": 0,
             "auto_scroll": auto_scroll,
+            "sid": sid,
         }
         text.bind("<Button-1>", lambda e, m=mon: _on_left_click(e, m))
         text.bind("<Button-3>", lambda e, m=mon: _on_right_click(e, m))
@@ -1711,20 +1732,31 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             text.see(tk.END)
 
     def _append_frame(mon: dict, ev: dict) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视配色
         ts = time.strftime("%H:%M:%S", time.localtime(ev.get("ts") or time.time()))
-        block = f"[{ts}] {ev.get('direction', '')} {ev.get('note', '')}\n{ev.get('hex', '')}\n\n"
+        direction = str(ev.get("direction") or "").upper()
+        hx = str(ev.get("hex") or "")
+        block = f"[{ts}] {ev.get('direction', '')} {ev.get('note', '')}\n{hx}\n\n"
+        kind = "tx" if direction == "TX" else ("rx" if direction == "RX" else "")
+        item = (block, (kind,) if kind else (), hx)
         if mon["frozen"]:
-            mon["pending"].append(block)
+            mon["pending"].append(item)
             return
-        _append_text(mon, block)
+        _append_text(mon, block, extra=item[1])
+        mon.setdefault("hexes", []).append(hx)
+        # [AGENT_CHANGE_END] 2026-09-12 报文监视配色
 
     def _append_log(mon: dict, ev: dict) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视配色
         ts = time.strftime("%H:%M:%S", time.localtime(ev.get("ts") or time.time()))
         block = f"[{ts}] ◆ {ev.get('text', '')}\n\n"
+        item = (block, ("log",), "")
         if mon["frozen"]:
-            mon["pending"].append(block)
+            mon["pending"].append(item)
             return
         _append_text(mon, block, extra=("log",))
+        mon.setdefault("hexes", []).append("")
+        # [AGENT_CHANGE_END] 2026-09-12 报文监视配色
 
     def _msg_text(mon: dict, tag: str) -> str:
         r = mon["text"].tag_ranges(tag)
@@ -1767,10 +1799,25 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
     def _set_frozen(mon: dict, frozen: bool) -> None:
         mon["frozen"] = frozen
         if not frozen and mon["pending"]:
-            for block in mon["pending"]:
-                _append_text(mon, block)
+            for item in mon["pending"]:
+                if isinstance(item, tuple):
+                    _append_text(mon, item[0], extra=item[1] if len(item) > 1 else ())
+                    if len(item) >= 3:
+                        mon.setdefault("hexes", []).append(item[2])
+                    else:
+                        mon.setdefault("hexes", []).append("")
+                else:
+                    _append_text(mon, item)
             mon["pending"].clear()
         mon["status"].config(text="已冻结，新报文缓存中" if frozen else "")
+
+    def _clear_monitor(mon: dict) -> None:
+        mon["text"].delete("1.0", tk.END)
+        mon["pending"].clear()
+        mon["tags"].clear()
+        mon.setdefault("hexes", []).clear()
+        mon["n"] = 0
+        mon["status"].config(text="")
 
     def _copy_msg(mon: dict, tag: str) -> None:
         text = mon["text"]
@@ -1785,17 +1832,106 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
             text.clipboard_append(sel)
             mon["status"].config(text="已复制到剪贴板")
 
-    def _clear_monitor(mon: dict) -> None:
-        mon["text"].delete("1.0", tk.END)
-        mon["pending"].clear()
-        mon["tags"].clear()
-        mon["n"] = 0
-        mon["status"].config(text="")
-
     def _clear_monitor_sid(sid: str) -> None:
         mon = monitors.get(sid)
         if mon:
             _clear_monitor(mon)
+
+    def _open_frame_parse_tk(mon: dict, tag: str) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 右键报文解析
+        from protocol.frame_inspect import hex_to_bytes, inspect_frame, session_sizes
+
+        hx = ""
+        if tag and tag in mon.get("tags", []):
+            idx = mon["tags"].index(tag)
+            hexes = mon.get("hexes") or []
+            if 0 <= idx < len(hexes):
+                hx = hexes[idx]
+        if not hx and tag:
+            body = _msg_text(mon, tag)
+            for line in body.splitlines():
+                toks = line.strip().split()
+                if toks and all(len(t) == 2 for t in toks[:3]):
+                    hx = line.strip()
+                    break
+        raw = hex_to_bytes(hx)
+        if not raw:
+            messagebox.showwarning("提示", "请先点选一条带 HEX 的报文再解析", parent=win)
+            return
+        sid = mon.get("sid") or ""
+        sess = {}
+        for s in (api.list_sessions().get("sessions") or []):
+            if s.get("id") == sid:
+                sess = s
+                break
+        sizes = session_sizes(sess)
+        root = inspect_frame(raw, **sizes)
+        dlg = tk.Toplevel(win)
+        dlg.title(f"报文帧数据: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        dlg.geometry("780x420")
+        paned = ttk.Panedwindow(dlg, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        left = ttk.Frame(paned)
+        right = ttk.Frame(paned)
+        paned.add(left, weight=3)
+        paned.add(right, weight=2)
+        tree = ttk.Treeview(left, columns=("val", "desc"), show="tree headings", selectmode="browse")
+        tree.heading("#0", text="名称")
+        tree.heading("val", text="值")
+        tree.heading("desc", text="描述")
+        tree.column("#0", width=120)
+        tree.column("val", width=100)
+        tree.column("desc", width=200)
+        tree.pack(fill=tk.BOTH, expand=True)
+        hex_txt = tk.Text(right, wrap="char", font=("Consolas", 10))
+        hex_txt.pack(fill=tk.BOTH, expand=True)
+        hex_str = " ".join(f"{b:02X}" for b in raw)
+        hex_txt.insert("1.0", hex_str)
+        hex_txt.tag_config("hl", background="#1d4ed8", foreground="#ffffff")
+        meta = {}
+
+        def add_node(parent, node):
+            iid = tree.insert(
+                parent, "end", text=node.name, values=(node.value, node.desc), open=True
+            )
+            meta[iid] = (int(node.offset), int(node.length))
+            for ch in node.children or []:
+                add_node(iid, ch)
+
+        add_node("", root)
+
+        def on_sel(_e=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            off, length = meta.get(sel[0], (0, 0))
+            hex_txt.tag_remove("hl", "1.0", tk.END)
+            if length <= 0:
+                return
+            start = max(0, off) * 3
+            end = min(len(raw), off + length) * 3
+            if end <= start:
+                return
+            # Text index: 1.0 + N chars
+            a = f"1.0+{start}c"
+            b = f"1.0+{end}c"
+            try:
+                if hex_txt.get(f"{b}-1c") == " ":
+                    b = f"1.0+{end - 1}c"
+            except tk.TclError:
+                pass
+            hex_txt.tag_add("hl", a, b)
+            hex_txt.see(a)
+
+        tree.bind("<<TreeviewSelect>>", on_sel)
+        ttk.Label(
+            dlg,
+            text=f"规约={sizes['protocol']} COT={sizes['cot_size']}B CA={sizes['ca_size']}B "
+            f"IOA={sizes['ioa_size']}B（完整解析）",
+            foreground="#666",
+        ).pack(anchor="w", padx=8)
+        ttk.Button(dlg, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=8, pady=6)
+        # [AGENT_CHANGE_END] 2026-09-12 右键报文解析
 
     def _on_right_click(event, mon: dict) -> None:
         menu = tk.Menu(mon["text"], tearoff=0)
@@ -1805,6 +1941,7 @@ def run_tk_shell(api: "ApiBridge", root: Path) -> None:
         else:
             menu.add_command(label="冻结报文", command=lambda: _set_frozen(mon, True))
         menu.add_command(label="复制报文", command=lambda: _copy_msg(mon, tag))
+        menu.add_command(label="报文解析", command=lambda: _open_frame_parse_tk(mon, tag))
         menu.add_separator()
         menu.add_command(label="清空报文", command=lambda: _clear_monitor(mon))
         try:

@@ -849,6 +849,12 @@ class ApiBridge:
     def clock_sync(self) -> dict:
         return self._cmd(lambda: self._active_master().clock_sync())
 
+    # [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程命令
+    def reset_process(self, qrp: int = 1) -> dict:
+        """发送复位进程命令 C_RP_NA_1(105)，默认 QRP=1。"""
+        return self._cmd(lambda: self._active_master().reset_process(int(qrp)))
+    # [AGENT_CHANGE_END] 2026-09-12 复位进程命令
+
     def single_command(self, ioa: int, on: bool, select: bool) -> dict:
         self._record_control(ioa, "sel" if select else "exec", on)
         return self._cmd_confirm(

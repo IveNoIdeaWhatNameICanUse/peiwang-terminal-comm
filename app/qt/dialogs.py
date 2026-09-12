@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -20,8 +21,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QSizePolicy,
+    QSplitter,
     QTableWidgetItem,
     QTabWidget,
+    QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -108,13 +113,17 @@ class Params101Dialog(QDialog):
         grid.setHorizontalSpacing(20)
         grid.setVerticalSpacing(8)
 
-        self.port = _combo([], sess.get("serial_port", "COM1"), editable=True)
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 101串口保存生效
+        # EditableComboBox 空列表时 setCurrentText 无效；须先有 items 再选中，
+        # 且刷新时保留会话/当前口（不在枚举里则插入），禁止静默改成 ports[0]。
+        self.port = _combo([], "", editable=True)
         grid.addWidget(field_label("串口"), 0, 0, Qt.AlignRight | Qt.AlignVCenter)
         grid.addWidget(self.port, 0, 1)
         grid.addWidget(
             make_button("刷新串口", self.refresh_ports), 0, 2, Qt.AlignLeft | Qt.AlignVCenter
         )
-        self.refresh_ports()
+        self.refresh_ports(preferred=str(sess.get("serial_port") or "COM1"))
+        # [AGENT_CHANGE_END] 2026-09-12 101串口保存生效
 
         self.baud = _combo(
             ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"],
@@ -175,17 +184,22 @@ class Params101Dialog(QDialog):
         # [AGENT_CHANGE_2026-09-11] 收紧最小尺寸，避免大片留白（实际尺寸仍由 sizeHint 决定）
         fit_dialog(self, win, min_w=480, min_h=220)
 
-    def refresh_ports(self) -> None:
+    def refresh_ports(self, preferred: str | None = None) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 101串口保存生效
+        want = (preferred if preferred is not None else self.port.currentText()).strip()
         ports = [p.get("port") for p in (self.api.list_serial_ports() or []) if p.get("port")]
+        if want and want not in ports:
+            ports = [want] + ports
         if not ports:
-            ports = [self.port.currentText().strip() or "COM1"]
-        current = self.port.currentText().strip()
-        self.port.clear()
-        self.port.addItems(ports)
-        if current in ports:
-            self.port.setCurrentText(current)
-        else:
-            self.port.setCurrentText(ports[0])
+            ports = [want or "COM1"]
+        self.port.blockSignals(True)
+        try:
+            self.port.clear()
+            self.port.addItems(ports)
+            self.port.setCurrentText(want if want in ports else ports[0])
+        finally:
+            self.port.blockSignals(False)
+        # [AGENT_CHANGE_END] 2026-09-12 101串口保存生效
 
     def _on_addr_changed(self, _text: str) -> None:
         if not self._addr_prog:
@@ -625,11 +639,122 @@ def open_stats_dialog(win, sid: str) -> None:
     dlg.exec()
 
 
+# [AGENT_CHANGE_BEGIN] 2026-09-12 报文解析对话框
+class FrameParseDialog(QDialog):
+    """报文帧数据：左侧完整解析（至信息体），右侧 HEX；点选字段高亮对应字节。
+    监视窗口摘要仍只显示到公共地址；本对话框做全量解析。
+    """
+
+    def __init__(self, win, raw: bytes, sess: dict, title_ts: str = "") -> None:
+        super().__init__(win)
+        self.win = win
+        self.raw = bytes(raw or b"")
+        self.setWindowTitle(f"报文帧数据: {title_ts}" if title_ts else "报文帧数据")
+        self.setModal(False)
+        self.resize(780, 420)
+
+        from protocol.frame_inspect import inspect_frame, session_sizes
+
+        sizes = session_sizes(sess)
+        root = inspect_frame(self.raw, **sizes)
+
+        split = QSplitter(Qt.Horizontal)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["名称", "值", "描述"])
+        self.tree.setColumnWidth(0, 120)
+        self.tree.setColumnWidth(1, 100)
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+
+        self.hex_view = QTextEdit()
+        self.hex_view.setReadOnly(True)
+        self.hex_view.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.hex_view.setFontFamily("Consolas")
+        self.hex_text = " ".join(f"{b:02X}" for b in self.raw)
+        self.hex_view.setPlainText(self.hex_text)
+
+        self._fill_tree(None, root)
+        self.tree.expandAll()
+        self.tree.itemSelectionChanged.connect(self._on_select)
+        if self.tree.topLevelItemCount():
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
+
+        split.addWidget(self.tree)
+        split.addWidget(self.hex_view)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        hint = muted_label(
+            f"规约={sizes['protocol']}  COT={sizes['cot_size']}B  "
+            f"CA={sizes['ca_size']}B  IOA={sizes['ioa_size']}B"
+            + (f"  链路地址={sizes['addr_size']}B" if sizes["protocol"] == "101" else "")
+            + "  （完整解析）"
+        )
+        lay.addWidget(hint)
+        lay.addWidget(split, 1)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        btns.addWidget(make_button("关闭", self.accept))
+        lay.addLayout(btns)
+
+    def _fill_tree(self, parent: Optional[QTreeWidgetItem], node) -> None:
+        item = QTreeWidgetItem([node.name, node.value, node.desc])
+        item.setData(0, Qt.UserRole, (int(node.offset), int(node.length)))
+        if parent is None:
+            self.tree.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+        for ch in node.children or []:
+            self._fill_tree(item, ch)
+
+    def _on_select(self) -> None:
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        off, length = items[0].data(0, Qt.UserRole) or (0, 0)
+        self._highlight(int(off or 0), int(length or 0))
+
+    def _highlight(self, offset: int, length: int) -> None:
+        """按字节偏移高亮右侧 HEX（每字节 'XX '）。"""
+        self.hex_view.setExtraSelections([])
+        if length <= 0 or not self.raw:
+            return
+        start = max(0, offset) * 3
+        end = min(len(self.raw), offset + length) * 3
+        if end <= start:
+            return
+        end = min(end, len(self.hex_text))
+        while end > start and self.hex_text[end - 1] == " ":
+            end -= 1
+        cursor = self.hex_view.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        sel = QTextEdit.ExtraSelection()
+        sel.cursor = cursor
+        sel.format.setBackground(QColor("#1d4ed8"))
+        sel.format.setForeground(QColor("#ffffff"))
+        self.hex_view.setExtraSelections([sel])
+        self.hex_view.setTextCursor(cursor)
+        self.hex_view.ensureCursorVisible()
+
+
+def open_frame_parse(win, raw: bytes, sess: dict, title_ts: str = "") -> None:
+    if not raw:
+        warn(win, "提示", "无有效报文可解析")
+        return
+    FrameParseDialog(win, raw, sess or {}, title_ts).exec()
+
+
+# [AGENT_CHANGE_END] 2026-09-12 报文解析对话框
+
+
 __all__ = [
     "open_101_params",
     "open_104_params",
     "open_device_params",
     "open_remote_dialog",
     "open_stats_dialog",
+    "open_frame_parse",
 ]
 # [AGENT_CHANGE_END] 2026-09-11 Qt对话框

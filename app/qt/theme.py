@@ -28,9 +28,13 @@ ACCENT2 = "#115e59"
 DANGER = "#b91c1c"
 OK = "#047857"
 HINT = "#2563eb"
-MONITOR_BG = "#0b1220"
-MONITOR_FG = "#dbeafe"
-MONITOR_LOG = "#facc15"
+# [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视配色
+MONITOR_BG = "#ffffff"
+MONITOR_FG = "#1f2a32"
+MONITOR_TX = "#dc2626"   # 发送红
+MONITOR_RX = "#2563eb"   # 接收蓝
+MONITOR_LOG = "#ca8a04"  # 提示黄（白底可读）
+# [AGENT_CHANGE_END] 2026-09-12 报文监视配色
 
 # 事件类别配色（对应 app/tk_shell.py 的 tree.tag_configure）
 EVENT_COLORS = {
@@ -128,14 +132,14 @@ QGroupBox::title {
   subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #115e59; font-weight: 600;
 }
 
-/* ---- 报文监视（深色终端）---- */
+/* ---- 报文监视（白底：TX红 / RX蓝 / 提示黄）---- */
 QTextEdit#Monitor {
-  background: #0b1220; color: #dbeafe; border: 1px solid #d7e0e6; border-radius: 8px;
+  background: #ffffff; color: #1f2a32; border: 1px solid #d7e0e6; border-radius: 8px;
   font-family: Consolas, "Courier New", monospace; font-size: 12px; padding: 8px;
-  selection-background-color: #1d4ed8; selection-color: #ffffff;
+  selection-background-color: #bfdbfe; selection-color: #1f2a32;
 }
-QTextEdit#Monitor QScrollBar:vertical { background: #0b1220; width: 10px; margin: 0; }
-QTextEdit#Monitor QScrollBar::handle:vertical { background: #334155; border-radius: 5px; min-height: 24px; }
+QTextEdit#Monitor QScrollBar:vertical { background: #f8fafc; width: 10px; margin: 0; }
+QTextEdit#Monitor QScrollBar::handle:vertical { background: #c9d5dd; border-radius: 5px; min-height: 24px; }
 QTextEdit#Monitor QScrollBar::add-line:vertical, QTextEdit#Monitor QScrollBar::sub-line:vertical { height: 0; }
 
 /* ---- 菜单 ---- */

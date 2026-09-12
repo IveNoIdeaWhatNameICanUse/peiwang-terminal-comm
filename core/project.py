@@ -366,11 +366,12 @@ class ProjectStore:
         pts = self.config.session_points(sid)
         changed = []
         by_ioa = {p.ioa: p for p in pts}
-        # 仅遥信/遥测数据类自动创建新点；控制/参数类确认(55/108/202/203 等)
-        # 不在点表时不自动添加(如 203 固化/撤销确认的 IOA=0 整区对象)
-        AUTO_CREATE = {1, 3, 5, 7, 9, 11, 13, 15, 30, 31, 36}
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 禁止报文自动加点表
+        # 仅刷新点表已有 IOA 的值/品质/遥信类型；总召等上送不再自动创建遥信/遥测点。
         for obj in objects:
             ioa = int(obj["ioa"])
+            if ioa not in by_ioa:
+                continue
             extra = obj.get("extra") or {}
             rt = obj.get("type_id")
             se = extra.get("se")
@@ -384,36 +385,22 @@ class ProjectStore:
                     preset_flag = ((extra.get("feat") or 0) & 0x80) == 0x80
                 if preset_flag or not pos:
                     update_value = False
-            if ioa in by_ioa:
-                if update_value and obj.get("value") is not None:
-                    by_ioa[ioa].value = obj.get("value")
-                    by_ioa[ioa].quality = int(obj.get("quality") or 0)
-                # 遥信类：按实际收到的报文类型（单点1/30、双点3/31）回写点表类型，
-                # 避免导入时误标为单点导致 1 被显示成“合”（双点 1=分）
-                if rt in (1, 3, 30, 31) and by_ioa[ioa].category in ("遥信", ""):
-                    if by_ioa[ioa].type_id != rt:
-                        by_ioa[ioa].type_id = rt
-                    by_ioa[ioa].category = "遥信"
-                if extra.get("dtype") is not None:
-                    by_ioa[ioa].data_type = int(extra["dtype"])
-                changed.append(asdict(by_ioa[ioa]))
-            else:
-                if rt not in AUTO_CREATE or ioa == 0:
-                    continue  # 控制/参数确认或整区对象：不自动建点
-                p = PointDef(
-                    ioa=ioa,
-                    type_id=int(rt),
-                    name=f"IOA-{ioa}",
-                    category=category_for_type(rt),
-                    value=obj.get("value") if update_value else None,
-                    quality=int(obj.get("quality") or 0),
-                    data_type=int(extra["dtype"]) if extra.get("dtype") is not None else 0,
-                )
-                pts.append(p)
-                changed.append(asdict(p))
+            if update_value and obj.get("value") is not None:
+                by_ioa[ioa].value = obj.get("value")
+                by_ioa[ioa].quality = int(obj.get("quality") or 0)
+            # 遥信类：按实际收到的报文类型（单点1/30、双点3/31）回写点表类型，
+            # 避免导入时误标为单点导致 1 被显示成“合”（双点 1=分）
+            if rt in (1, 3, 30, 31) and by_ioa[ioa].category in ("遥信", ""):
+                if by_ioa[ioa].type_id != rt:
+                    by_ioa[ioa].type_id = rt
+                by_ioa[ioa].category = "遥信"
+            if extra.get("dtype") is not None:
+                by_ioa[ioa].data_type = int(extra["dtype"])
+            changed.append(asdict(by_ioa[ioa]))
         if changed:
             self.config.set_session_points(sid, pts)
         return changed
+        # [AGENT_CHANGE_END] 2026-09-12 禁止报文自动加点表
 
 
 # [AGENT_CHANGE_END] 2026-09-07 多主站工程模型

@@ -153,10 +153,13 @@
         const tr = document.createElement("tr");
         tr.dataset.ioa = pt.ioa;
         tr.onclick = () => tr.classList.toggle("sel");
+        // [AGENT_CHANGE_BEGIN] 2026-09-12 仅遥调可编辑修改值
+        const modEdit = curCat === "遥调" ? `contenteditable="true"` : `contenteditable="false"`;
         tr.innerHTML =
           `<td class="num">${pt.ioa}</td><td>${pt.name || ""}</td><td>${pt.type_id || ""}</td>` +
           `<td>${fmtVal(pt)}</td><td>${pt.quality ?? 0}</td>` +
-          `<td contenteditable="true" data-mod="modval">${pt.modval ?? ""}</td>`;
+          `<td ${modEdit} data-mod="modval">${pt.modval ?? ""}</td>`;
+        // [AGENT_CHANGE_END] 2026-09-12 仅遥调可编辑修改值
         body.appendChild(tr);
       });
     }).catch(() => {});
@@ -501,6 +504,12 @@
       const r = await api("clock_sync");
       if (!r.ok) await appAlert("对时失败", r.error || "");
     };
+    // [AGENT_CHANGE_BEGIN] 2026-09-12 复位进程按钮
+    $("btnResetProc").onclick = async () => {
+      const r = await api("reset_process", 1);
+      if (!r.ok) await appAlert("复位进程失败", r.error || "");
+    };
+    // [AGENT_CHANGE_END] 2026-09-12 复位进程按钮
     $("variantSel").onchange = async () => {
       await api("set_protocol_variant", $("variantSel").value);
     };

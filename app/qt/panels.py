@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -44,6 +44,7 @@ from app.qt.common import (
     muted_label,
     point_category,
     type_label,
+    warn,
 )
 
 
@@ -157,8 +158,12 @@ class PointsPanel(QWidget):
                 for col, text in enumerate(values):
                     item = QTableWidgetItem(str(text))
                     item.setData(Qt.UserRole, ioa)
-                    if col != self.MODVAL_COL:
+                    # [AGENT_CHANGE_BEGIN] 2026-09-12 仅遥调可编辑修改值
+                    # 遥信/遥测/遥控：修改值列不可双击编辑；遥调保持可编（定值整定）
+                    editable = col == self.MODVAL_COL and cat == "遥调"
+                    if not editable:
                         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    # [AGENT_CHANGE_END] 2026-09-12 仅遥调可编辑修改值
                     table.setItem(row, col, item)
         finally:
             self._loading = False
@@ -219,12 +224,17 @@ class PointsPanel(QWidget):
     # ---- 表格交互 ----
 
     def _on_double(self, table: QTableWidget, row: int, col: int) -> None:
-        """双击：遥控点弹遥控窗口；“修改值”列就地编辑。"""
-        item = table.item(row, self.MODVAL_COL)
+        """双击：遥控点弹遥控窗口；仅遥调「修改值」列就地编辑。"""
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 仅遥调可编辑修改值
         if col == self.MODVAL_COL:
+            cat = next((name for name, t in self.tables.items() if t is table), "")
+            if cat != "遥调":
+                return
+            item = table.item(row, self.MODVAL_COL)
             if item is not None:
                 table.editItem(item)
             return
+        # [AGENT_CHANGE_END] 2026-09-12 仅遥调可编辑修改值
         first = table.item(row, 0)
         if first is None:
             return
@@ -293,7 +303,7 @@ class PointsPanel(QWidget):
 
 
 class MonitorPanel(QWidget):
-    """报文监视：深色终端文本 + 冻结/复制/清空/导出。"""
+    """报文监视：白底文本；TX红 / RX蓝 / 提示黄。"""
 
     def __init__(self, win, sid: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -303,6 +313,7 @@ class MonitorPanel(QWidget):
         self.frozen = False
         self.pending: list = []
         self.segments: list = []   # (起始块号, 结束块号(不含))
+        self.frame_hexes: list = []  # 与 segments 对齐的 HEX 原文
         self.auto_scroll = True
 
         lay = QVBoxLayout(self)
@@ -325,7 +336,10 @@ class MonitorPanel(QWidget):
         self.text = QTextEdit()
         self.text.setObjectName("Monitor")
         self.text.setReadOnly(True)
-        self.text.setLineWrapMode(QTextEdit.NoWrap)
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视自动换行
+        self.text.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.text.setWordWrapMode(QTextOption.WrapAnywhere)
+        # [AGENT_CHANGE_END] 2026-09-12 报文监视自动换行
         self.text.setContextMenuPolicy(Qt.CustomContextMenu)
         self.text.customContextMenuRequested.connect(self._on_context_menu)
         self.text.viewport().installEventFilter(self)
@@ -381,29 +395,41 @@ class MonitorPanel(QWidget):
             self.text.moveCursor(QTextCursor.End)
             self.text.ensureCursorVisible()
 
-    def _pending_or_append(self, block: str, is_log: bool = False) -> None:
+    def _pending_or_append(self, block: str, kind: str = "frame", hx: str = "") -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视配色
         if self.frozen:
-            self.pending.append((block, is_log))
+            self.pending.append((block, kind, hx))
             return
-        self._do_append(block, is_log)
+        self._do_append(block, kind, hx)
 
-    def _do_append(self, block: str, is_log: bool = False) -> None:
-        if is_log:
-            fmt = QTextCharFormat()
+    def _do_append(self, block: str, kind: str = "frame", hx: str = "") -> None:
+        fmt = QTextCharFormat()
+        if kind == "tx":
+            fmt.setForeground(QColor(theme.MONITOR_TX))
+        elif kind == "rx":
+            fmt.setForeground(QColor(theme.MONITOR_RX))
+        elif kind == "log":
             fmt.setForeground(QColor(theme.MONITOR_LOG))
-            self._append(block, fmt)
         else:
-            self._append(block)
+            fmt.setForeground(QColor(theme.MONITOR_FG))
+        self._append(block, fmt)
+        self.frame_hexes.append(hx or "")
+        # [AGENT_CHANGE_END] 2026-09-12 报文监视配色
 
     def append_frame(self, ev: dict) -> None:
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 报文监视配色
         ts = time.strftime("%H:%M:%S", time.localtime(ev.get("ts") or time.time()))
-        block = f"[{ts}] {ev.get('direction', '')} {ev.get('note', '')}\n{ev.get('hex', '')}\n\n"
-        self._pending_or_append(block, is_log=False)
+        direction = str(ev.get("direction") or "").upper()
+        hx = str(ev.get("hex") or "")
+        block = f"[{ts}] {ev.get('direction', '')} {ev.get('note', '')}\n{hx}\n\n"
+        kind = "tx" if direction == "TX" else ("rx" if direction == "RX" else "frame")
+        self._pending_or_append(block, kind=kind, hx=hx)
+        # [AGENT_CHANGE_END] 2026-09-12 报文监视配色
 
     def append_log(self, ev: dict) -> None:
         ts = time.strftime("%H:%M:%S", time.localtime(ev.get("ts") or time.time()))
         block = f"[{ts}] ◆ {ev.get('text', '')}\n\n"
-        self._pending_or_append(block, is_log=True)
+        self._pending_or_append(block, kind="log", hx="")
 
     # ---- 工具栏 ----
 
@@ -419,8 +445,11 @@ class MonitorPanel(QWidget):
 
     def flush_pending(self) -> None:
         if self.pending:
-            for block, is_log in self.pending:
-                self._do_append(block, is_log)
+            for item in self.pending:
+                if len(item) >= 3:
+                    self._do_append(item[0], item[1], item[2])
+                else:
+                    self._do_append(item[0], item[1], "")
             self.pending.clear()
 
     def set_frozen(self, frozen: bool) -> None:
@@ -433,6 +462,7 @@ class MonitorPanel(QWidget):
         self.text.clear()
         self.pending.clear()
         self.segments.clear()
+        self.frame_hexes.clear()
         self.status.setText("")
 
     def export(self) -> None:
@@ -458,9 +488,11 @@ class MonitorPanel(QWidget):
         view_pos = self.text.viewport().mapFrom(self.text, pos)
         block_no = self.text.cursorForPosition(view_pos).blockNumber()
         seg = None
-        for candidate in self.segments:
+        seg_idx = -1
+        for i, candidate in enumerate(self.segments):
             if candidate[0] <= block_no < candidate[1]:
                 seg = candidate
+                seg_idx = i
                 break
         menu = QMenu(self)
         if self.frozen:
@@ -468,9 +500,42 @@ class MonitorPanel(QWidget):
         else:
             menu.addAction("冻结报文", lambda: self.set_frozen(True))
         menu.addAction("复制报文", lambda: self._copy_msg(seg))
+        # [AGENT_CHANGE_BEGIN] 2026-09-12 右键报文解析
+        menu.addAction("报文解析", lambda: self._parse_msg(seg_idx, seg))
+        # [AGENT_CHANGE_END] 2026-09-12 右键报文解析
         menu.addSeparator()
         menu.addAction("清空报文", self.clear)
         menu.exec(self.text.mapToGlobal(pos))
+
+    def _parse_msg(self, seg_idx: int, seg) -> None:
+        from protocol.frame_inspect import hex_to_bytes
+        from app.qt.dialogs import open_frame_parse
+
+        hx = ""
+        if 0 <= seg_idx < len(self.frame_hexes):
+            hx = self.frame_hexes[seg_idx]
+        if not hx and seg:
+            doc = self.text.document()
+            start_block = doc.findBlockByNumber(seg[0])
+            end_block = doc.findBlockByNumber(max(seg[1] - 1, seg[0]))
+            if start_block.isValid() and end_block.isValid():
+                text = doc.toPlainText()[
+                    start_block.position() : end_block.position() + max(0, end_block.length() - 1)
+                ]
+                for line in text.splitlines():
+                    if any(c in "0123456789abcdefABCDEF" for c in line) and " " in line.strip():
+                        # 取像 HEX 的行
+                        toks = line.strip().split()
+                        if toks and all(len(t) <= 2 for t in toks[:4]):
+                            hx = line.strip()
+                            break
+        raw = hex_to_bytes(hx)
+        if not raw:
+            warn(self.win, "提示", "请先点选一条带 HEX 的报文再解析")
+            return
+        sess = self.win.session(self.sid) or {}
+        title = time.strftime("%Y-%m-%d %H:%M:%S")
+        open_frame_parse(self.win, raw, sess, title)
 
     def _copy_msg(self, seg) -> None:
         text = self.text.textCursor().selectedText().strip()
